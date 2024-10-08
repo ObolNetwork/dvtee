@@ -1,7 +1,6 @@
 .PHONY: clean kernel docker-image
 
 clean:
-	rm -rf linux-mainline-sev-src/src linux-mainline-sev-src/pkg
 	rm -rf out/*
 
 docker-image:
@@ -9,4 +8,4 @@ docker-image:
 
 kernel: docker-image
 	mkdir -p out
-	docker run -it --rm -v $(PWD)/linux-mainline-sev-src:/src -v $(PWD)/out:/src/out obolnetwork/alpine-sev-builder:latest
+	docker run -it --rm -v $(PWD)/out:/src/out obolnetwork/alpine-sev-builder:latest
