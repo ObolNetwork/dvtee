@@ -27,4 +27,4 @@ RUN abuild-keygen -a -i -n
 WORKDIR /src
 
 # run the build!
-CMD ["sh", "/build_kernel.sh"]
+ENTRYPOINT ["sh", "/build_kernel.sh"]
