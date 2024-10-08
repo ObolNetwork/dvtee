@@ -12,6 +12,12 @@ if [ "$CMD" == "checksum" ]; then
   exit 0
 fi
 
+if [ "$CMD" == "initramfs"]; then
+  cd /src
+  build_initramfs
+  exit 0
+fi
+
 # build kernel stored at /src and output to /src/out
 abuild -rK -m -P /src/out
 
@@ -19,6 +25,17 @@ abuild -rK -m -P /src/out
 doas apk add /src/out/x86_64/*.apk
 
 if [ "$CMD" = "complete" ]; then
+  build_initramfs
+  # copy vmlinuz-mainline-sev to out directory, we already have an initramfs from the previous step
+  doas cp /boot/vmlinuz-mainline-sev /src/out
+fi
+
+# cleanup out directory a bit
+mv /src/out/x86_64/*.apk /src/out
+doas chown builder:wheel /src/out/*
+doas rm -rf /src/out/x86_64
+
+function build_initramfs() {
   # tell the kernel to load sev-guest on boot
   echo "sev-guest" | doas tee /etc/modules-load.d/sev-guest.conf
   
@@ -39,12 +56,4 @@ if [ "$CMD" = "complete" ]; then
     -o /src/out/initramfs-mainline-sev \
     -i /src/initramfs-init \
     $(ls /boot/config-*-mainline-sev | cut -c14-)
-
-  # copy vmlinuz-mainline-sev to out directory, we already have an initramfs from the previous step
-  doas cp /boot/vmlinuz-mainline-sev /src/out
-fi
-
-# cleanup out directory a bit
-mv /src/out/x86_64/*.apk /src/out
-doas chown builder:wheel /src/out/*
-doas rm -rf /src/out/x86_64
+}

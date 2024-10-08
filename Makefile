@@ -19,3 +19,5 @@ kernel: out-dir docker-image
 just-kernel: out-dir docker-image	
 	docker run -it --rm -v $(PWD)/out:/src/out obolnetwork/alpine-sev-builder:latest
 
+just-initramfs: out-dir docker-image
+	docker run -it --rm -v $(PWD)/linux-mainline-sev-src:/src obolnetwork/alpine-sev-builder:latest initramfs
