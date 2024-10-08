@@ -3,7 +3,14 @@
 set -x
 set -e
 
-FULL=$1
+CMD=$1
+
+# this command assumes that /src is a mounted volume
+if [ "$CMD" == "checksum" ]; then 
+  cd /src
+  abuild checksum
+  exit 0
+fi
 
 # build kernel stored at /src and output to /src/out
 abuild -rK -m -P /src/out
@@ -11,7 +18,7 @@ abuild -rK -m -P /src/out
 # install kernel package so that initramfs can be built
 doas apk add /src/out/x86_64/*.apk
 
-if [ "$FULL" = "complete" ]; then
+if [ "$CMD" = "complete" ]; then
   # tell the kernel to load sev-guest on boot
   echo "sev-guest" | doas tee /etc/modules-load.d/sev-guest.conf
   
