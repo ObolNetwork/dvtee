@@ -7,7 +7,7 @@ CMD=$1
 
 function build_initramfs() {
   # install kernel package so that initramfs can be built
-  doas apk add /src/out/x86_64/*.apk
+  doas apk add /src/out/x86_64/*.apk --allow-untrusted
   
   # tell the kernel to load sev-guest on boot
   echo "sev-guest" | doas tee /etc/modules-load.d/sev-guest.conf
