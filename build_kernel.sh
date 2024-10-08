@@ -5,6 +5,29 @@ set -e
 
 CMD=$1
 
+function build_initramfs() {
+  # tell the kernel to load sev-guest on boot
+  echo "sev-guest" | doas tee /etc/modules-load.d/sev-guest.conf
+  
+  # setup rust
+  doas apk add rustup perl pkgconfig openssl-dev openssl mkinitfs
+  rustup-init -y
+  
+  # install snpguest for initramfs inclusion
+  ~/.cargo/bin/cargo install snpguest
+
+  # copy snpguest binary to /bin so that mkinitfs will move it in the appropriate directory (lol)
+  doas cp /home/builder/.cargo/bin/snpguest /bin
+  
+  # generate an updated initramfs with sevguest and sev kernel module inside
+  doas mkinitfs \
+    -P /src/mkinitfs-features \
+    -c /src/mkinitfs.conf \
+    -o /src/out/initramfs-mainline-sev \
+    -i /src/initramfs-init \
+    $(ls /boot/config-*-mainline-sev | cut -c14-)
+}
+
 # this command assumes that /src is a mounted volume
 if [ "$CMD" == "checksum" ]; then 
   cd /src
@@ -35,25 +58,3 @@ mv /src/out/x86_64/*.apk /src/out
 doas chown builder:wheel /src/out/*
 doas rm -rf /src/out/x86_64
 
-function build_initramfs() {
-  # tell the kernel to load sev-guest on boot
-  echo "sev-guest" | doas tee /etc/modules-load.d/sev-guest.conf
-  
-  # setup rust
-  doas apk add rustup perl pkgconfig openssl-dev openssl mkinitfs
-  rustup-init -y
-  
-  # install snpguest for initramfs inclusion
-  ~/.cargo/bin/cargo install snpguest
-
-  # copy snpguest binary to /bin so that mkinitfs will move it in the appropriate directory (lol)
-  doas cp /home/builder/.cargo/bin/snpguest /bin
-  
-  # generate an updated initramfs with sevguest and sev kernel module inside
-  doas mkinitfs \
-    -P /src/mkinitfs-features \
-    -c /src/mkinitfs.conf \
-    -o /src/out/initramfs-mainline-sev \
-    -i /src/initramfs-init \
-    $(ls /boot/config-*-mainline-sev | cut -c14-)
-}
