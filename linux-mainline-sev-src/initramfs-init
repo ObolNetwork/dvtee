@@ -635,8 +635,11 @@ fi
 # zpool reports /dev/zfs missing if it can't read /etc/mtab
 ln -s /proc/mounts "$ROOT"/etc/mtab
 
+ebegin Deriving AMD-SEV decryption key
 # TEST: try deriving a derived key in /crypto_keyfile.bin
+$MOCK modprobe sev-guest
 snpguest key /crypto_keyfile.bin vcek --guest_file_select 111111
+eend $?
 
 # check if root=... was set
 if [ -n "$KOPT_root" ]; then
