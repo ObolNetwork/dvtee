@@ -1,3 +1,5 @@
 linux-mainline-sev-src/pkg
 linux-mainline-sev-src/src
 out
+*.qcow2
+*.log
