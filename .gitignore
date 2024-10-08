@@ -3,3 +3,4 @@ linux-mainline-sev-src/src
 out
 *.qcow2
 *.log
+*.efi
