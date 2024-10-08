@@ -42,7 +42,7 @@ runcmd:
     uuidgen > /etc/machine-id
     
     # install mainline-sev kernel
-    #apk add --allow-untrusted /ci/linux-mainline-sev-6.11-r1.apk
+    apk add --allow-untrusted /ci/linux-mainline-sev-6.11-r1.apk
 
     # install rust
     #echo "Installing latest Rust for user 'signer'"
