@@ -54,7 +54,4 @@ if [ "$CMD" = "complete" ]; then
 fi
 
 # cleanup out directory a bit
-mv /src/out/x86_64/*.apk /src/out
 doas chown builder:wheel /src/out/*
-doas rm -rf /src/out/x86_64
-
