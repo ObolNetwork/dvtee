@@ -8,4 +8,5 @@ docker-image:
 
 kernel: docker-image
 	mkdir -p out
+	chmod 777 out
 	docker run -it --rm -v $(PWD)/out:/src/out obolnetwork/alpine-sev-builder:latest
