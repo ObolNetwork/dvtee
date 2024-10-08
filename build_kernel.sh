@@ -12,7 +12,7 @@ if [ "$CMD" == "checksum" ]; then
   exit 0
 fi
 
-if [ "$CMD" == "initramfs"]; then
+if [ "$CMD" == "initramfs" ]; then
   cd /src
   build_initramfs
   exit 0
