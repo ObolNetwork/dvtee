@@ -20,7 +20,7 @@ mount /dev/nbd9p2 root-image
 mkdir root-image/ci
 cp user-data root-image/ci
 cp meta-data root-image/ci
-cp ../out/linux-mainline-sev-6.11-r1.apk root-image/ci
+cp ../out/x86_64/linux-mainline-sev-6.11-r1.apk root-image/ci
 sync
 umount root-image
 
