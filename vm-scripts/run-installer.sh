@@ -14,7 +14,9 @@
 -device virtio-net-pci,disable-legacy=on,iommu_platform=true,netdev=vmnic,romfile= \
 -device virtio-scsi-pci,id=scsi0,disable-legacy=on,iommu_platform=true,romfile= \
 -device scsi-hd,drive=disk0 \
--drive if=none,id=disk0,format=qcow2,file=root.qcow2  \
+-drive if=none,id=disk0,format=qcow2,file=installer.qcow2 \
+-device scsi-hd,drive=disk1 \
+-drive if=none,id=disk1,format=qcow2,file=root.qcow2  \
 -serial file:./qemu.log \
 --trace "kvm_sev*" \
 -D ./qemu-trace.log \

@@ -42,17 +42,17 @@ runcmd:
     uuidgen > /etc/machine-id
     
     # install mainline-sev kernel
-    apk add --allow-untrusted /ci/linux-mainline-sev-6.11-r1.apk
+    #apk add --allow-untrusted /ci/linux-mainline-sev-6.11-r1.apk
 
     # install rust
-    echo "Installing latest Rust for user 'signer'"
-    su -c "rustup-init -y" - signer
+    #echo "Installing latest Rust for user 'signer'"
+    #su -c "rustup-init -y" - signer
 
     # install snpguest
-    echo "Installing latest snpguest for user 'signer'"
-    su -c "/home/signer/.cargo/bin/cargo install snpguest" - signer
+    #echo "Installing latest snpguest for user 'signer'"
+    #su -c "/home/signer/.cargo/bin/cargo install snpguest" - signer
 
     # reboot for good measure
-    reboot
+    #reboot
 
     

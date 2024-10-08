@@ -22,12 +22,12 @@ just-kernel: out-dir docker-image
 just-initramfs: out-dir docker-image
 	docker run -it --rm -v $(PWD)/out:/src/out obolnetwork/alpine-sev-builder:latest initramfs
 
-provision:
+provision-installer:
 	cd vm-scripts
-	bash provision_disk.sh
+	bash provision-installer.sh
 	cd ..
 
-run:
+run-installer:
 	cd vm-scripts
-	bash run.sh
+	bash run-installer.sh
 	cd ..
