@@ -1,0 +1,2 @@
+/bin/snpguest
+/etc/modules-load.d/sev-guest.conf

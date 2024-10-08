@@ -1,0 +1,4 @@
+perl
+pkgconfig
+openssl-dev
+alpine-sdk

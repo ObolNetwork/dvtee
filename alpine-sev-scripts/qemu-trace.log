@@ -1,0 +1,13 @@
+kvm_sev_init 
+kvm_sev_snp_launch_start policy 0x30000 gosvw (null)
+kvm_sev_change_state uninit -> launch-update
+kvm_sev_snp_launch_update src 0x74ed75200000 gpa 0xffc00000 len 0x400000 (Normal page)
+kvm_sev_snp_launch_update src 0x74ecf0600000 gpa 0x800000 len 0x9000 (Zero page)
+kvm_sev_snp_launch_update src 0x74ecf060a000 gpa 0x80a000 len 0x3000 (Zero page)
+kvm_sev_snp_launch_update src 0x74ecf060d000 gpa 0x80d000 len 0x1000 (Secrets page)
+kvm_sev_snp_launch_update src 0x74ecf060e000 gpa 0x80e000 len 0x1000 (Cpuid page)
+kvm_sev_snp_launch_update src 0x74ecf060f000 gpa 0x80f000 len 0x1000 (Zero page)
+kvm_sev_snp_launch_update src 0x74ecf0610000 gpa 0x810000 len 0x1000 (Normal page)
+kvm_sev_snp_launch_update src 0x74ecf0611000 gpa 0x811000 len 0xf000 (Zero page)
+kvm_sev_snp_launch_finish id_block (null) id_auth (null) host_data (null)
+kvm_sev_change_state launch-update -> running
