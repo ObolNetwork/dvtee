@@ -20,7 +20,7 @@ mount /dev/nbd9p2 root-image
 mkdir root-image/ci
 cp user-data root-image/ci
 cp meta-data root-image/ci
-cp alpine-sev-kernel/linux-mainline-sev-6.11-r1.apk root-image/ci
+cp ../out/linux-mainline-sev-6.11-r1.apk root-image/ci
 sync
 umount root-image
 
@@ -32,6 +32,6 @@ qemu-nbd --disconnect /dev/nbd9
 CMDLINE=$(echo $CMDLINE_TMPL | sed "s|ALPUUID|$ROOT_UUID|g")
 
 ukify build \
-  --linux ./alpine-sev-kernel/vmlinuz-mainline-sev \
-  --initrd alpine-sev-kernel/initramfs-mainline-sev \
+  --linux ../out/vmlinuz-mainline-sev \
+  --initrd ../out/initramfs-mainline-sev \
   --cmdline "$CMDLINE"
