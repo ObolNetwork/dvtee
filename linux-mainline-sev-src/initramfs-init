@@ -1,7 +1,7 @@
 #!/bin/sh
 
 # this is the init script version
-VERSION=3.10.1-r0
+VERSION=3.10.1-r0-derived-key-sev
 SINGLEMODE=no
 sysroot="$ROOT"/sysroot
 splashfile=/.splash.ctrl
@@ -634,6 +634,9 @@ fi
 
 # zpool reports /dev/zfs missing if it can't read /etc/mtab
 ln -s /proc/mounts "$ROOT"/etc/mtab
+
+# TEST: try deriving a derived key in /crypto_keyfile.bin
+snpguest key /crypto_keyfile.bin vcek --guest_file_select 111111
 
 # check if root=... was set
 if [ -n "$KOPT_root" ]; then

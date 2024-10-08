@@ -23,7 +23,12 @@ rustup-init -y
 doas cp /home/builder/.cargo/bin/snpguest /bin
 
 # generate an updated initramfs with sevguest and sev kernel module inside
-doas mkinitfs -P /src/mkinitfs-features -c /src/mkinitfs.conf -o /src/out/initramfs-mainline-sev $(ls /boot/config-*-mainline-sev | cut -c14-)
+doas mkinitfs \
+  -P /src/mkinitfs-features \
+  -c /src/mkinitfs.conf \
+  -o /src/out/initramfs-mainline-sev \
+  -i /src/initramfs-init \
+  $(ls /boot/config-*-mainline-sev | cut -c14-)
 
 # copy vmlinuz-mainline-sev to out directory, we already have an initramfs from the previous step
 doas cp /boot/vmlinuz-mainline-sev /src/out
