@@ -3,7 +3,7 @@ set -e
 set -x
 
 if [ "$1" = "clean" ]; then
-  rm -f *.qcow2 *.efi
+  rm -f *.qcow2 *.efi *.bin
   exit 0
 fi
 
