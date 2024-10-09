@@ -26,6 +26,7 @@ sudo mount /dev/nbd9p2 installer/installer-root-image
 sudo mkdir -p installer/installer-root-image/ci
 sudo cp installer/user-data installer/installer-root-image/ci
 sudo cp installer/meta-data installer/installer-root-image/ci
+sudo cp installer/install.sh installer/installer-root-image/ci
 sudo cp ../out/x86_64/linux-mainline-sev-6.11-r1.apk installer/installer-root-image/ci
 sync
 sudo umount installer/installer-root-image
