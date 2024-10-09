@@ -636,9 +636,12 @@ fi
 ln -s /proc/mounts "$ROOT"/etc/mtab
 
 ebegin Deriving AMD-SEV decryption key
-# TEST: try deriving a derived key in /crypto_keyfile.bin
 $MOCK modprobe sev-guest
-snpguest key /crypto_keyfile_snp.bin vcek --guest_file_select 111111
+if ls /crypto_keyfile.bin 1> /dev/null 2>&1; then
+	echo "Not deriving SNP key since one is already present in initramfs"
+else
+	snpguest key /crypto_keyfile.bin vcek --guest_file_select 111111
+fi
 eend $?
 
 # check if root=... was set
