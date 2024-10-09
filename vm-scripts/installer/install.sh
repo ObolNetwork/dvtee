@@ -35,5 +35,7 @@ cryptsetup open -d /crypto_key.bin /dev/sdb1 root
 # create an ext4 filesystem
 mkfs.ext4 /dev/mapper/root
 
-# run setup-alpine with answer file
-setup-alpine -f /ci/setup-alpine-answers
+# mount root filesystem
+mkdir -p /mnt/root
+mount /dev/mapper/root /mnt/root
+setup-disk -m sys -v -k linux-lts /mnt/root
