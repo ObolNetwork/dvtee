@@ -68,10 +68,10 @@ runcmd:
     echo "0" > /zero_keyfile.bin
 
     # enroll derived key
-    cryptsetup luksAddKey -d /zero_keyfile.bin  /dev/sda1
+    cryptsetup luksAddKey -d /zero_keyfile.bin /dev/sda1 /crypto_keyfile.bin
 
     # delete zero key by authorizing LUKS operation with derived key
-    cryptsetup luksKillSlot -d /crypto_keyfile.bin  /dev/sda1 0
+    cryptsetup luksKillSlot -d /crypto_keyfile.bin /dev/sda1 0
 
     # delete zero key canary
     rm /mnt/canary/no-snp-key
