@@ -25,6 +25,9 @@ just-initramfs: out-dir docker-image
 initramfs-first-boot: out-dir docker-image
 	docker run -it --rm -v $(PWD)/out:/src/out -v $(PWD)/vm-scripts/crypto_key.bin:/crypto_keyfile.bin obolnetwork/alpine-sev-builder:latest initramfs
 
+initramfs-runtime: out-dir docker-image
+	docker run -it --rm -v $(PWD)/out:/src/out -v $(PWD)/vm-scripts/crypto_key.bin:/crypto_keyfile.bin obolnetwork/alpine-sev-builder:latest initramfs-runtime
+
 provision-installer:
 	cd vm-scripts
 	bash provision-installer.sh
