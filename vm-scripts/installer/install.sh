@@ -10,11 +10,16 @@ alias p="parted -sa optimal $DEST"
 p mklabel gpt
 
 # create one large root partition which will be encrypted with cryptsetup
-# no need for esp or boot since qemu will load the kernel for us
-p mkpart p 0G 100%
+# create a small plaintext partition to bridge the gap between first boot and subsequent boots
+p mkpart p 0G 49G
+p mkpart p 50G 100%
+
+mkfs.ext4 /dev/sdb2
+mkdir -p /mnt/keystore 
+mount /dev/sdb2 /mnt/keystore
 
 # generate a derived key from AMD-SEV SNP subsystem and store it to /crypto_key.bin
-/home/signer/.cargo/bin/snpguest key /crypto_key.bin vcek --guest_file_select 111111
+/home/signer/.cargo/bin/snpguest key /mnt/keystore/crypto_key.bin vcek --guest_file_select 111111
 
 # format with cryptsetup using the crypto_key.bin generated before
 cryptsetup -v \
@@ -24,16 +29,16 @@ cryptsetup -v \
    --pbkdf pbkdf2 \
    --iter-time 5000 \
    --use-random \
-   -d /crypto_key.bin \
+   -d /mnt/keystore/crypto_key.bin \
    -q \
    luksFormat \
    ${DEST}1
 
 # unlock it
-cryptsetup open -d /crypto_key.bin /dev/sdb1 root
+cryptsetup open -d /mnt/keystore/crypto_key.bin /dev/sdb1 root
 
 # create an ext4 filesystem
-mkfs.ext4 /dev/mapper/root
+mkfs.ext4 -L ROOT /dev/mapper/root
 
 # remove linux-mainline-sev package in order for the installation to proceed without issues
 apk del linux-mainline-sev
