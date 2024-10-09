@@ -26,18 +26,40 @@ derived key.
 
 ## How to use
 
+> [!NOTE]
+> As of now this process does not allow for SSH access, the terminal you see at the end of this process is your only
+> way of accessing the encrypted VM.
+>
+> This issue will be addressed at a later date.
+
+> [!NOTE]
+> The default user logins are `root`:`root` and `signer`:`signer`.
+>
+> `signer` user has `doas` privileges, no password needed.
+> 
+> In production, the image will not support any form of remote login.
+
 1. build the kernel image and initramfs:
    ```
    make kernel 
    ```
-2. move in the `vm-scripts` directory and provision disks:
+2. move in the `vm-scripts` directory and provision the installer disks:
    ```
    cd vm-scripts
-   bash ./provision-disk.sh
+   bash ./provision-installer.sh clean # !!! This command will ERASE any existing VM disk!
+   bash ./provision-installer.sh
    ```
-3. run!
+3. run the installer VM:
    ```
-    bash run.sh
+    bash ./run-installer.sh
+   ```
+4. provision the final [UKI](https://wiki.archlinux.org/title/Unified_kernel_image) for the encrypted VM:
+   ```
+   bash ./provision.sh 
+   ```
+5. run the encrypted VM:
+   ```
+   bash ./run.sh 
    ```
 
 ## Git Hooks
