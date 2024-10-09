@@ -15,6 +15,7 @@ packages:
  - uuidgen
  - rustup
  - parted
+ - cryptsetup
 
 chpasswd:
   list: |
