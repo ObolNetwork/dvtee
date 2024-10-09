@@ -1,4 +1,4 @@
-.PHONY: clean kernel docker-image
+.PHONY: clean kernel docker-image out-dir kernel-checksum just-kernel just-initramfs provision-installer run-installer
 
 clean:
 	rm -rf out/*
