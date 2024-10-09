@@ -637,11 +637,20 @@ ln -s /proc/mounts "$ROOT"/etc/mtab
 
 ebegin Deriving AMD-SEV decryption key
 $MOCK modprobe sev-guest
-if ls /crypto_keyfile.bin 1> /dev/null 2>&1; then
-	echo "Not deriving SNP key since one is already present in initramfs"
+
+# if a file named "no-snp-key" is found on /dev/sda2, then
+# do not attempt to decrypt the disk with a SNP-derived key, and
+# use the "empty key" instead.
+mkdir /canary
+$MOCK mount /dev/sda2 /canary
+if ls /canary/no-snp-key 1> /dev/null 2>&1; then
+	echo "SNP key canary file found, **NOT** deriving an SNP key!"
+	echo 0 > /crypto_keyfile.bin
 else
+	echo "No SNP key canary file found **DERIVING AN SNP KEY!**"
 	snpguest key /crypto_keyfile.bin vcek --guest_file_select 111111
 fi
+
 eend $?
 
 # check if root=... was set

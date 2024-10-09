@@ -18,8 +18,9 @@ mkfs.ext4 /dev/sdb2
 mkdir -p /mnt/keystore 
 mount /dev/sdb2 /mnt/keystore
 
-# generate a derived key from AMD-SEV SNP subsystem and store it to /crypto_key.bin
-/home/signer/.cargo/bin/snpguest key /mnt/keystore/crypto_key.bin vcek --guest_file_select 111111
+# encrypt root with the "empty key", we'll derive and encrypt an SNP key later.
+echo "0" > /mnt/keystore/crypto_key.bin
+touch /mnt/keystore/no-snp-key
 
 # format with cryptsetup using the crypto_key.bin generated before
 cryptsetup -v \
