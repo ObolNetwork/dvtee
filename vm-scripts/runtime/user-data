@@ -1,0 +1,58 @@
+#cloud-config
+
+package_update: true
+package_upgrade: true
+package_reboot_if_required: true
+
+packages:
+ - perl
+ - pkgconfig
+ - openssl-dev
+ - openssl
+ - alpine-sdk
+ - vim
+ - curl
+ - uuidgen
+ - rustup
+ - parted
+ - cryptsetup
+
+chpasswd:
+  list: |
+    root:root
+  expire: False
+ssh_pwauth: true
+
+users:
+  - default
+  - name: signer
+    plain_text_passwd: signer
+    lock_passwd: false
+    groups: wheel
+    doas:
+      - permit nopass signer
+      - permit persist :wheel
+
+write_files:
+  - path: /etc/modules-load.d/sev-guest.conf
+    content: |
+      sev-guest
+
+runcmd:
+  - |
+    # setup a machine-id
+    uuidgen > /etc/machine-id
+    
+    # install mainline-sev kernel
+    apk add --allow-untrusted /ci/linux-mainline-sev-6.11-r1.apk
+
+    # install rust
+    echo "Installing latest Rust for user 'signer'"
+    su -c "rustup-init -y" - signer
+
+    # install snpguest
+    echo "Installing latest snpguest for user 'signer'"
+    su -c "/home/signer/.cargo/bin/cargo install snpguest" - signer
+
+    # load sev-guest kernel module
+    modprobe sev-guest
