@@ -62,7 +62,7 @@ runcmd:
     mount /dev/sda2 /mnt/canary
 
     # derive a key
-    snpguest key /crypto_keyfile.bin vcek --guest_file_select 111111
+    /home/signer/.cargo/bin/snpguest key /crypto_keyfile.bin vcek --guest_file_select 111111
 
     # create the zero key
     echo "0" > /zero_keyfile.bin
