@@ -1,6 +1,6 @@
 FROM alpine:3.20
 
-RUN apk add alpine-sdk doas bash \
+RUN apk add alpine-sdk doas bash cryptsetup \
     &&  adduser \
     --disabled-password \
     --gecos "" \
