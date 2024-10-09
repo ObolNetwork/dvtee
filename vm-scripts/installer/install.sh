@@ -1,5 +1,7 @@
 #!/bin/sh
 
+set -ex
+
 DEST=/dev/sdb
 
 alias p="parted -sa optimal $DEST"
@@ -33,6 +35,5 @@ cryptsetup open -d /crypto_key.bin /dev/sdb1 root
 # create an ext4 filesystem
 mkfs.ext4 /dev/mapper/root
 
-# mount it to /mnt/root
-mkdir -p /mnt/root
-mount /dev/mapper/root /mnt/root
+# run setup-alpine with answer file
+setup-alpine -f /ci/setup-alpine-answers
