@@ -35,7 +35,13 @@ cryptsetup open -d /crypto_key.bin /dev/sdb1 root
 # create an ext4 filesystem
 mkfs.ext4 /dev/mapper/root
 
+# remove linux-mainline-sev package in order for the installation to proceed without issues
+apk del linux-mainline-sev
+
 # mount root filesystem
 mkdir -p /mnt/root
 mount /dev/mapper/root /mnt/root
-setup-disk -m sys -v -k linux-lts /mnt/root
+setup-disk -m sys -v -k lts /mnt/root
+
+# enable cloud-init on the destination drive
+chroot /mnt/root setup-cloud-init

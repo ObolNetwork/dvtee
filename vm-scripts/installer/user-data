@@ -56,4 +56,9 @@ runcmd:
 
     # load sev-guest kernel module
     modprobe sev-guest
-    
+
+    # run installer
+    sh /ci/install.sh
+
+    # power off
+    poweroff
