@@ -48,5 +48,6 @@ chroot /mnt/root setup-cloud-init
 
 # copy cloud-init over to the new root
 rm -rf /mnt/root/ci/*
+mkdir -p /mnt/root/ci
 cp -r /ci/runtime/* /mnt/root/ci
 cp /ci/linux-mainline-sev-6.11-r1.apk /mnt/root/ci/linux-mainline-sev-6.11-r1.apk
