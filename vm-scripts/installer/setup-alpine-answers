@@ -10,15 +10,6 @@ HOSTNAMEOPTS=sev-signer
 # Set device manager to mdev
 DEVDOPTS=mdev
 
-# Contents of /etc/network/interfaces
-INTERFACESOPTS="auto lo
-iface lo inet loopback
-
-auto eth0
-iface eth0 inet dhcp
-hostname alpine-test
-"
-
 # Search domain of example.com, Google public nameserver
 DNSOPTS="-d example.com 8.8.8.8"
 
@@ -32,7 +23,7 @@ PROXYOPTS=none
 APKREPOSOPTS="-1"
 
 # Create admin user
-#USEROPTS="-a -u -g audio,video,netdev juser"
+USEROPTS="-a -u -g audio,video,netdev,wheel signer"
 #USERSSHKEY="ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOIiHcbg/7ytfLFHUNLRgEAubFz/13SwXBOM/05GNZe4 juser@example.com"
 #USERSSHKEY="https://example.com/juser.keys"
 
