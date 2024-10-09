@@ -3,15 +3,13 @@ set -e
 set -x
 
 if [ "$1" = "clean" ]; then
-  rm *.qcow2 *.efi
+  rm -f *.qcow2 *.efi
   exit 0
 fi
 
 CMDLINE_TMPL="root=UUID=ALPUUID ds=nocloud;s=/ci; modules=sd-mod,usb-storage,ext4 rootfstype=ext4 console=ttyS0"
 
 sudo modprobe nbd
-
-rm -f installer.qcow2
 
 curl https://dl-cdn.alpinelinux.org/alpine/v3.20/releases/cloud/nocloud_alpine-3.20.3-x86_64-uefi-cloudinit-r0.qcow2 -O -L
 qemu-img create -f qcow2 -o preallocation=metadata installer.qcow2 10G
