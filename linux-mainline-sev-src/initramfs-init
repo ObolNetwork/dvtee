@@ -654,6 +654,9 @@ else
 	snpguest key /crypto_keyfile.bin vcek --guest_file_select 111111
 fi
 
+$MOCK umount /canary
+rm -rf /canary
+
 eend $?
 
 # check if root=... was set
