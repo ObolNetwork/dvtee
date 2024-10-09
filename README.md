@@ -39,3 +39,12 @@ derived key.
    ```
     bash run.sh
    ```
+
+## Git Hooks
+
+You can find some useful git hooks in the `.githooks` directory.
+To use them, run the following command after cloning this repository:
+
+```sh
+git config --local core.hooksPath .githooks
+````
