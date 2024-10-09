@@ -56,3 +56,28 @@ runcmd:
 
     # load sev-guest kernel module
     modprobe sev-guest
+
+    # mount canary
+    mkdir /mnt/canary
+    mount /dev/sda2 /mnt/canary
+
+    # derive a key
+    snpguest key /crypto_keyfile.bin vcek --guest_file_select 111111
+
+    # create the zero key
+    echo "0" > /zero_keyfile.bin
+
+    # enroll derived key
+    cryptsetup luksAddKey -d /zero_keyfile.bin  /dev/sda1
+
+    # delete zero key by authorizing LUKS operation with derived key
+    cryptsetup luksKillSlot -d /crypto_keyfile.bin  /dev/sda1 0
+
+    # delete zero key canary
+    rm /mnt/canary/no-snp-key
+
+    # unmount canary partition
+    umount /mnt/canary
+
+    # poweroff for good measure
+    poweroff
