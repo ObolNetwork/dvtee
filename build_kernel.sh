@@ -44,14 +44,6 @@ if [ "$CMD" == "initramfs" ]; then
   exit 0
 fi
 
-if [ "$CMD" == "initramfs-runtime" ]; then
-  cd /src
-  rm mkinitfs.conf
-  mv mkinitfs.runtime.conf mkinitfs.conf
-  build_initramfs
-  exit 0
-fi
-
 # build kernel stored at /src and output to /src/out
 abuild -rK -m -P /src/out
 
