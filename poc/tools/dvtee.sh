@@ -114,11 +114,13 @@ build_w3s_server_cert() {
     openssl rand -base64 16 > password.txt && \
     openssl pkcs12 -export -out mykeystore.p12 -inkey privatekey.pem -in certificate.pem -passout pass:\$(cat password.txt) && \
     chmod 444 mykeystore.p12"
+    #openssl pkey -in privatekey.pem -pubout -out publickey.pem
 }
 
 run_w3s_server() {
   # Run Web3Signer using the configuration file
   ssh_guest_command "sudo docker run -d \
+    --init \
     --restart unless-stopped \
     --name web3signer \
     -v ~/.charon/validator_keys:/opt/keystore \
@@ -223,15 +225,21 @@ main() {
       ssh_guest_command "rm -rf ~/${W3S_CERT_DIR}"
       build_w3s_config_file
       build_w3s_server_cert
+      # Requests an attestation which includes a 64-byte          hash of the certificate as report data
+      ssh_guest_command "openssl dgst -sha3-512 ${W3S_CERT_DIR}/certificate.pem | cut -d ' ' -f 2 | xxd -r -p > hash.bin"
+      ssh_guest_command "sudo ./snpguest report attestation-report-cert.bin hash.bin"
+      # Transfer the server certificate to the client for mutual TLS along with the attestation report
+      scp_guest_command "${GUEST_USER}@${IP_ADDR}:~/${W3S_CERT_DIR}/certificate.pem" "./server_certificate.pem"
+      scp_guest_command "${GUEST_USER}@${IP_ADDR}:~/attestation-report-cert.bin" "./attestation-report-cert.bin"
+      # /!\ /!\ /!\ TODO: Use virtee sev rust library to verify the report on the owner side /!\ /!\ /!\
+
       # Transfer the client certificate to the server for mutual TLS
       scp_guest_command "$CLIENT_FILE_PATH" "${GUEST_USER}@${IP_ADDR}:~/${W3S_CERT_DIR}/knownClients.txt"
-      # Transfer the server certificate to the client for mutual TLS
-      scp_guest_command "${GUEST_USER}@${IP_ADDR}:~/${W3S_CERT_DIR}/certificate.pem" "./server_certificate.pem"
       run_w3s_server
       ;;
 
     stop-w3s)
-      ssh_guest_command "sudo docker stop web3signer"
+      ssh_guest_command "sudo docker rm --force web3signer"
       ;;
 
     *)
