@@ -11,8 +11,17 @@ The two primary features include:
 The workflow described below was obtained using an AMD EPYC 7313P platform supporting SEV-SNP.
 
 ### 1. Setup the host and launch an SNP guest
-Setup the host machine and launch an SNP guest, by following the instructions described in the [sev-utils](https://github.com/amd/sev-utils/blob/main/docs/snp.md) repo from AMD.
+Setup the host machine by following the instructions described in the [sev-utils](https://github.com/amd/sev-utils/blob/main/docs/snp.md) repo from AMD.
 > ℹ️ Because we used Ubuntu 24.04 `CLOUD_INIT_IMAGE_URL` was set to `"https://cloud-images.ubuntu.com/noble/current/noble-server-cloudimg-amd64.img"` instead of `"https://cloud-images.ubuntu.com/jammy/current/jammy-server-cloudimg-amd64.img"` and we added `hostfwd=tcp::9000-:9000` to the `-netdev` option in qemu cmdline since web3signer will be listening on port 9000.
+
+Connect to the host and launch a guest
+```
+./<path_to_snp_script>/snp.sh attest-guest
+```
+and eventually run the attestation process to ensure the SNP guest was launched as expected.
+```
+./<path_to_snp_script>/snp.sh attest-guest
+```
 
 At the end of the process, you should be able to access the guest via SSH.
 Before moving to the next steps, install docker on the guest as it will be required to run Charon and Web3Signer.
