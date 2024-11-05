@@ -63,8 +63,8 @@ mkdir -p /mnt/root/var/etc
 mkdir -p /mnt/root/home
 mkdir -p /mnt/root/etc
 mount ${DEST}3 /mnt/root/var
+mount ${DEST}3 /mnt/root/etc # make it writable
 mount ${DEST}4 /mnt/root/home
-ln -s /mnt/root/etc /mnt/root/var/etc
 setup-disk -m sys -v -k lts /mnt/root
 
 # enable cloud-init on the destination drive
