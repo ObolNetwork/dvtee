@@ -108,6 +108,11 @@ su -c "rustup-init -y" - signer
 # install snpguest
 echo "Installing latest snpguest for user 'signer'"
 su -c "/home/signer/.cargo/bin/cargo install snpguest" - signer
+
+# mount root read-only
+old=$(cat /etc/fstab | head -n1)
+new=$(cat /etc/fstab | head -n1 | sed 's|rw,relatime|ro,noatime|g')
+sed "s|$old|$new|g" /etc/fstab
 EOF
 
 # !!! ALL CHANGES TO ROOT FS MUST HAPPEN BEFORE THIS !!!
