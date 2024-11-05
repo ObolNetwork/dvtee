@@ -66,8 +66,8 @@ mount ${DEST}4 /mnt/root/home
 setup-disk -m sys -v -k lts /mnt/root
 
 # enable cloud-init on the destination drive
-chroot /mnt/root setup-cloud-init
-chroot /mnt/root cloud-init clean --logs
+#chroot /mnt/root setup-cloud-init
+#chroot /mnt/root cloud-init clean --logs
 
 # copy cloud-init over to the new root
 rm -rf /mnt/root/ci/*
@@ -82,6 +82,21 @@ mount --rbind /sys /mnt/root/sys
 mount --rbind /dev /mnt/root/dev
 mount --make-rslave /mnt/root/dev
 mount --make-rslave /mnt/root/sys
+
+cat << EOF | tee /mnt/root/etc/network/interfaces
+auto lo
+iface lo inet loopback
+
+auto eth0
+iface eth0 inet static
+   address 10.0.2.15/24
+   gateway 10.0.2.255
+EOF
+
+cat << EOF | tee /etc/resolv.conf
+nameserver 1.1.1.1
+nameserver 8.8.8.8
+EOF
 
 cat << EOF | chroot /mnt/root
 set -ex
