@@ -108,9 +108,6 @@ su -c "rustup-init -y" - signer
 # install snpguest
 echo "Installing latest snpguest for user 'signer'"
 su -c "/home/signer/.cargo/bin/cargo install snpguest" - signer
-
-# load sev-guest kernel module
-modprobe sev-guest
 EOF
 
 # !!! ALL CHANGES TO ROOT FS MUST HAPPEN BEFORE THIS !!!
