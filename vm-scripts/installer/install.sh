@@ -59,10 +59,12 @@ apk del linux-mainline-sev
 # mount root filesystem
 mkdir -p /mnt/root
 mount /dev/mapper/root /mnt/root
-mkdir -p /mnt/root/var
+mkdir -p /mnt/root/var/etc
 mkdir -p /mnt/root/home
+mkdir -p /mnt/root/etc
 mount ${DEST}3 /mnt/root/var
 mount ${DEST}4 /mnt/root/home
+ln -s /mnt/root/etc /mnt/root/var/etc
 setup-disk -m sys -v -k lts /mnt/root
 
 # enable cloud-init on the destination drive
@@ -80,9 +82,13 @@ mkdir -p /mnt/root/proc /mnt/root/sys /mnt/root/dev
 mount -t proc /proc /mnt/root/proc
 mount --rbind /sys /mnt/root/sys
 mount --rbind /dev /mnt/root/dev
+mount --make-rslave /mnt/root/dev
+mount --make-rslave /mnt/root/sys
 
 cat << EOF | chroot /mnt/root
 set -ex
+
+echo "sev-signer" > /etc/hostname
 
 adduser -D signer
 echo -e "signer:signer" | chpasswd
@@ -114,13 +120,6 @@ sed -i 's|\/[ \t]*ext4[ \t]*rw,relatime|/ ext4 ro,noatime|g' /etc/fstab
 EOF
 
 # !!! ALL CHANGES TO ROOT FS MUST HAPPEN BEFORE THIS !!!
-
-umount /mnt/root/home
-umount /mnt/root/var
-umount /mnt/root/proc
-umount /mnt/root/sys
-umount /mnt/root/dev
-umount /mnt/root
 
 # setup verity
 veritysetup format /dev/mapper/root ${DEST}2 | grep Root | cut -f2 >> /mnt/keystore/roothash.txt
