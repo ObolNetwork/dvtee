@@ -53,6 +53,9 @@ cryptsetup open -d /mnt/keystore/crypto_key.bin ${DEST}1 root
 # create an ext4 filesystem
 mkfs.ext4 -L ROOT /dev/mapper/root
 
+# remove linux-mainline-sev package in order for the installation to proceed without issues
+apk del linux-mainline-sev
+
 # mount root filesystem
 mkdir -p /mnt/root
 mount /dev/mapper/root /mnt/root
