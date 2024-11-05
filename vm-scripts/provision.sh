@@ -8,7 +8,7 @@ sudo qemu-nbd --connect=/dev/nbd9 root.qcow2
 sleep 1
 CRYPTROOT_UUID=$(sudo blkid /dev/nbd9p1 -s UUID -o value)
 mkdir -p keystore-dir
-sudo mount /dev/nbd9p3 keystore-dir
+sudo mount /dev/nbd9p5 keystore-dir
 ROOTHASH=$(cat keystore-dir/roothash.txt)
 sudo umount keystore-dir
 sudo rmdir keystore-dir
