@@ -115,6 +115,11 @@ EOF
 
 # !!! ALL CHANGES TO ROOT FS MUST HAPPEN BEFORE THIS !!!
 
+umount /mnt/root/home
+umount /mnt/root/var
+umount /mnt/root/proc
+umount /mnt/root/sys
+umount /mnt/root/dev
 umount /mnt/root
 
 # setup verity
