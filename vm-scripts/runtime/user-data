@@ -4,7 +4,7 @@ runcmd:
   - |
     # mount canary
     mkdir /tmp/canary
-    mount /dev/sda2 /tmp/canary
+    mount /dev/sda5 /tmp/canary
 
     # derive a key
     /home/signer/.cargo/bin/snpguest key /crypto_keyfile.bin vcek --guest_file_select 111111
