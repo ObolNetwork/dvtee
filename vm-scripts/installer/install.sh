@@ -35,7 +35,6 @@ echo "0" > /mnt/keystore/crypto_key.bin
 touch /mnt/keystore/no-snp-key
 
 # format with cryptsetup using the crypto_key.bin generated before
-modprobe dm_mod
 cryptsetup -v \
    -c aes-xts-plain64 \
    -s 512 \
