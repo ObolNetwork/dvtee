@@ -112,6 +112,8 @@ EOF
 
 # !!! ALL CHANGES TO ROOT FS MUST HAPPEN BEFORE THIS !!!
 
+umount /mnt/root
+
 # setup verity
 veritysetup format /dev/mapper/root ${DEST}2 | grep Root | cut -f2 >> /mnt/keystore/roothash.txt
 echo "ROOT HASH: $(cat /mnt/keystore/roothash.txt)"
