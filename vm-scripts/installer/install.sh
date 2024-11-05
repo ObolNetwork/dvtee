@@ -9,14 +9,19 @@ alias p="parted -sa optimal $DEST"
 # create msdos partition table
 p mklabel gpt
 
+# Partition scheme:
+# - root partition: 41GB
+# - verity partition: 8GB
+# - plaintext partition: 1GB
 # create one large root partition which will be encrypted with cryptsetup
 # create a small plaintext partition to bridge the gap between first boot and subsequent boots
-p mkpart p 0G 49G
-p mkpart p 50G 100%
+p mkpart p 0G 41G
+p mkpart p 41G 49G
+p mkpart p 49G 100%
 
-mkfs.ext4 /dev/sdb2
+mkfs.ext4 /dev/sdb3
 mkdir -p /mnt/keystore 
-mount /dev/sdb2 /mnt/keystore
+mount /dev/sdb3 /mnt/keystore
 
 # encrypt root with the "empty key", we'll derive and encrypt an SNP key later.
 echo "0" > /mnt/keystore/crypto_key.bin
@@ -36,7 +41,7 @@ cryptsetup -v \
    ${DEST}1
 
 # unlock it
-cryptsetup open -d /mnt/keystore/crypto_key.bin /dev/sdb1 root
+cryptsetup open -d /mnt/keystore/crypto_key.bin ${DEST}1 root
 
 # create an ext4 filesystem
 mkfs.ext4 -L ROOT /dev/mapper/root
@@ -58,3 +63,9 @@ rm -rf /mnt/root/ci/*
 mkdir -p /mnt/root/ci
 cp -r /ci/runtime/* /mnt/root/ci
 cp /ci/linux-mainline-sev-6.11-r1.apk /mnt/root/ci/linux-mainline-sev-6.11-r1.apk
+
+# !!! ALL CHANGES TO ROOT FS MUST HAPPEN BEFORE THIS !!!
+
+# setup verity
+veritysetup format /dev/mapper/root ${DEST}2 | grep Root | cut -f2 >> /mnt/keystore/roothash.txt
+echo "ROOT HASH: $(cat /mnt/keystore/roothash.txt)"
