@@ -638,14 +638,14 @@ ln -s /proc/mounts "$ROOT"/etc/mtab
 ebegin Deriving AMD-SEV decryption key
 $MOCK modprobe sev-guest
 
-# if a file named "no-snp-key" is found on /dev/sda2, then
+# if a file named "no-snp-key" is found on /dev/sda5, then
 # do not attempt to decrypt the disk with a SNP-derived key, and
 # use the "empty key" instead.
 mkdir /canary
 $MOCK nlplug-findfs -p /sbin/mdev ${KOPT_debug_init:+-d} \
 	${KOPT_uevent_buf_size:+-U $KOPT_uevent_buf_size} \
 	/dev/sda2
-$MOCK mount /dev/sda2 /canary
+$MOCK mount /dev/sda5 /canary
 if ls /canary/no-snp-key 1> /dev/null 2>&1; then
 	echo "SNP key canary file found, **NOT** deriving an SNP key!"
 	echo 0 > /crypto_keyfile.bin
