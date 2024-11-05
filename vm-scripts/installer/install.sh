@@ -72,9 +72,18 @@ mkdir -p /mnt/root/ci
 cp -r /ci/runtime/* /mnt/root/ci
 cp /ci/linux-mainline-sev-6.11-r1.apk /mnt/root/ci/linux-mainline-sev-6.11-r1.apk
 
+# prepare for chroot
+mkdir -p /mnt/root/proc /mnt/root/sys /mnt/root/dev
+mount -t proc /proc /mnt/root/proc
+mount --rbind /sys /mnt/root/sys
+mount --rbind /dev /mnt/root/dev
+
 cat << EOF | chroot /mnt/root
-adduser -h /home/signer signer
-echo -e "signer" | passwd signer
+set -ex
+
+adduser -D signer
+echo -e "signer:signer" | chpasswd
+echo -e "root:root" | chpasswd
 
 echo "permit nopass signer" > /etc/doas.conf
 echo "permit persist :wheel" >> /etc/doas.conf
