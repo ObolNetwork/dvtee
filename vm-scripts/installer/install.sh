@@ -59,11 +59,9 @@ apk del linux-mainline-sev
 # mount root filesystem
 mkdir -p /mnt/root
 mount /dev/mapper/root /mnt/root
-mkdir -p /mnt/root/var/etc
+mkdir -p /mnt/root/var
 mkdir -p /mnt/root/home
-mkdir -p /mnt/root/etc
 mount ${DEST}3 /mnt/root/var
-mount ${DEST}3 /mnt/root/etc # make it writable
 mount ${DEST}4 /mnt/root/home
 setup-disk -m sys -v -k lts /mnt/root
 
@@ -116,7 +114,7 @@ echo "Installing latest snpguest for user 'signer'"
 su -c "/home/signer/.cargo/bin/cargo install snpguest" - signer
 
 # mount root read-only
-sed -i 's|\/[ \t]*ext4[ \t]*rw,relatime|/ ext4 ro,noatime|g' /etc/fstab
+#sed -i 's|\/[ \t]*ext4[ \t]*rw,relatime|/ ext4 ro,noatime|g' /etc/fstab
 EOF
 
 # !!! ALL CHANGES TO ROOT FS MUST HAPPEN BEFORE THIS !!!
