@@ -110,9 +110,7 @@ echo "Installing latest snpguest for user 'signer'"
 su -c "/home/signer/.cargo/bin/cargo install snpguest" - signer
 
 # mount root read-only
-old=$(cat /etc/fstab | head -n1)
-new=$(cat /etc/fstab | head -n1 | sed 's|rw,relatime|ro,noatime|g')
-sed "s|$old|$new|g" /etc/fstab
+sed -i 's|\/[ \t]*ext4[ \t]*rw,relatime|/ ext4 ro,noatime|g' /etc/fstab
 EOF
 
 # !!! ALL CHANGES TO ROOT FS MUST HAPPEN BEFORE THIS !!!
