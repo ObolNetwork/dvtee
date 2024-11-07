@@ -90,8 +90,8 @@ iface lo inet loopback
 
 auto eth0
 iface eth0 inet static
-   address 10.0.2.15/24
-   gateway 10.0.2.255
+   address 10.0.0.1/24
+   gateway 10.0.0.2
 EOF
 
 cat << EOF | tee /etc/resolv.conf

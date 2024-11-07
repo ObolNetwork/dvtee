@@ -10,7 +10,7 @@
 -vga none \
 -nographic -serial mon:stdio \
 -monitor pty \
--netdev user,hostfwd=tcp::10022-:22,id=vmnic \
+-netdev user,ipv4=on,ipv6=off,net=10.0.0.1,host=10.0.0.2,hostfwd=tcp::10022-:22,id=vmnic \
 -device virtio-net-pci,disable-legacy=on,iommu_platform=true,netdev=vmnic,romfile= \
 -device virtio-scsi-pci,id=scsi0,disable-legacy=on,iommu_platform=true,romfile= \
 -device scsi-hd,drive=disk0 \
