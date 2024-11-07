@@ -130,11 +130,19 @@ echo "Installing latest snpguest for user 'signer'"
 su -c "/home/signer/.cargo/bin/cargo install snpguest" - signer
 
 # mount root read-only
-#sed -i 's|\/[ \t]*ext4[ \t]*rw,relatime|/ ext4 ro,noatime|g' /etc/fstab
+sed -i 's|\/[ \t]*ext4[ \t]*rw,relatime|/ ext4 ro,noatime|g' /etc/fstab
 EOF
 
 # !!! ALL CHANGES TO ROOT FS MUST HAPPEN BEFORE THIS !!!
 
+umount /mnt/root/sys
+umount /mnt/root/dev
+umount /mnt/root/proc
+umount /mnt/root
+
 # setup verity
-veritysetup format /dev/mapper/root ${DEST}2 | grep Root | cut -f2 >> /mnt/keystore/roothash.txt
+veritysetup -v --debug \ 
+   format /dev/mapper/root ${DEST}2 | \
+   grep Root | \
+   cut -f2 >> /mnt/keystore/roothash.txt
 echo "ROOT HASH: $(cat /mnt/keystore/roothash.txt)"
