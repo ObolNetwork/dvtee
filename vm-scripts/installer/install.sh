@@ -36,11 +36,6 @@ touch /mnt/keystore/no-snp-key
 
 # format with cryptsetup using the crypto_key.bin generated before
 cryptsetup -v \
-   -c aes-xts-plain64 \
-   -s 512 \
-   --hash sha512 \
-   --pbkdf pbkdf2 \
-   --iter-time 5000 \
    --use-random \
    -d /mnt/keystore/crypto_key.bin \
    -q \
@@ -78,11 +73,9 @@ cp /ci/linux-mainline-sev-6.11-r1.apk /mnt/root/ci/linux-mainline-sev-6.11-r1.ap
 
 # prepare for chroot
 mkdir -p /mnt/root/proc /mnt/root/sys /mnt/root/dev
-mount -t proc /proc /mnt/root/proc
-mount --rbind /sys /mnt/root/sys
-mount --rbind /dev /mnt/root/dev
-mount --make-rslave /mnt/root/dev
-mount --make-rslave /mnt/root/sys
+mount -t proc none /mnt/root/proc
+mount -o bind /sys /mnt/root/sys
+mount -o bind /dev /mnt/root/dev
 
 cat << EOF | tee /mnt/root/etc/network/interfaces
 auto lo
@@ -135,14 +128,13 @@ EOF
 
 # !!! ALL CHANGES TO ROOT FS MUST HAPPEN BEFORE THIS !!!
 
+umount /mnt/root/proc
 umount /mnt/root/sys
 umount /mnt/root/dev
-umount /mnt/root/proc
+umount /mnt/root/var
+umount /mnt/root/home
 umount /mnt/root
 
 # setup verity
-veritysetup -v --debug \ 
-   format /dev/mapper/root ${DEST}2 | \
-   grep Root | \
-   cut -f2 >> /mnt/keystore/roothash.txt
+veritysetup format /dev/mapper/root ${DEST}2 | grep Root | cut -f2 >> /mnt/keystore/roothash.txt
 echo "ROOT HASH: $(cat /mnt/keystore/roothash.txt)"
