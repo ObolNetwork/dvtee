@@ -660,19 +660,21 @@ rm -rf /canary
 eend $?
 
 ebegin Verifying root filesystem tampering
+       $MOCK modprobe dm-verity
        $MOCK nlplug-findfs $cryptopts -p /sbin/mdev ${KOPT_debug_init:+-d} \
                ${KOPT_uevent_buf_size:+-U $KOPT_uevent_buf_size}
                echo "ROOT HASH $KOPT_roothash"
-       veritysetup verify /dev/mapper/luks /dev/sda2 "$KOPT_roothash"
-       veritysetup open /dev/mapper/luks verified-root /dev/sda2 "$KOPT_roothash"
-       sh # TODO: remove this once we're aware of how veritysetup open works.
+       #veritysetup verify /dev/mapper/luks /dev/sda2 "$KOPT_roothash"
+       veritysetup open -v --panic-on-corruption \
+                /dev/mapper/luks verified-root /dev/sda2 "$KOPT_roothash"
+       KOPT_root=/dev/mapper/verified-root
 eend $?
 
 # check if root=... was set
 if [ -n "$KOPT_root" ]; then
 	# run nlplug-findfs before SINGLEMODE so we load keyboard drivers
 	ebegin "Mounting root"
-	$MOCK nlplug-findfs $cryptopts -p /sbin/mdev ${KOPT_debug_init:+-d} \
+	$MOCK nlplug-findfs -p /sbin/mdev ${KOPT_debug_init:+-d} \
 		${KOPT_uevent_buf_size:+-U $KOPT_uevent_buf_size} \
 		$KOPT_root
 
