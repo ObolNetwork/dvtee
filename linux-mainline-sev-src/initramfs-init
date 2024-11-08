@@ -450,7 +450,7 @@ myopts="autodetect_serial chart cryptroot cryptdm cryptheader cryptoffset
 	cryptdiscards cryptkey debug_init ds init init_args keep_apk_new modules
 	pkgs quiet root_size root usbdelay ip alpine_repo apkovl splash
 	blacklist overlaytmpfs overlaytmpfsflags rootfstype rootflags nbd resume resume_offset
-	s390x_net dasd ssh_key BOOTIF zfcp uevent_buf_size aoe aoe_iflist aoe_mtu wireguard"
+	s390x_net dasd ssh_key BOOTIF zfcp uevent_buf_size aoe aoe_iflist aoe_mtu wireguard roothash"
 
 for opt; do
 	case "$opt" in
@@ -657,6 +657,15 @@ fi
 $MOCK umount /canary
 rm -rf /canary
 
+eend $?
+
+ebegin Verifying root filesystem tampering
+       $MOCK nlplug-findfs $cryptopts -p /sbin/mdev ${KOPT_debug_init:+-d} \
+               ${KOPT_uevent_buf_size:+-U $KOPT_uevent_buf_size}
+               echo "ROOT HASH $KOPT_roothash"
+       veritysetup verify /dev/mapper/luks /dev/sda2 "$KOPT_roothash"
+       veritysetup open /dev/mapper/luks verified-root /dev/sda2 "$KOPT_roothash"
+       sh # TODO: remove this once we're aware of how veritysetup open works.
 eend $?
 
 # check if root=... was set
