@@ -16,7 +16,7 @@ Setup the host machine by following the instructions described in the [sev-utils
 
 Connect to the host and launch a guest
 ```
-./<path_to_snp_script>/snp.sh attest-guest
+./<path_to_snp_script>/snp.sh launch-guest
 ```
 and eventually run the attestation process to ensure the SNP guest was launched as expected.
 ```
