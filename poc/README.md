@@ -41,12 +41,12 @@ At this stage, each participant should have a .charon directory containing `char
     ```
 - In order to connect to the guest, copy the SSH private key from the host to your local machine by running
     ```
-    scp root@<host>:/root/snp/launch/snp-guest-key ./
+    scp <user>@<host>:<path-to-snp-guest-key> ./
     ```
-    where `<host>` refers to the IP address of the AMD SEV-SNP platform, and 
+    where `<host>` and `<path-to-snp-guest-key>` refers to the IP address of the AMD SEV-SNP platform and the path to the ssh key to acces the guest, respectively.
 
 ### 3. Run the DKG
-Run the following command where `CHARON_DIR_PATH` points to the `.charon` directory.
+Set the variables `IP_ADDR`, `GUEST_USER` and `HOST_SSH_PORT` in `dvtee.sh` according to your setup and run the following command where `CHARON_DIR_PATH` points to the `.charon` directory.
 ```
 ./tools/dvtee.sh run-dkg CHARON_DIR_PATH
 ```
