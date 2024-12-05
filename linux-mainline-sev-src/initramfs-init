@@ -635,6 +635,8 @@ fi
 # zpool reports /dev/zfs missing if it can't read /etc/mtab
 ln -s /proc/mounts "$ROOT"/etc/mtab
 
+echo "KOPT_installer: ${KOPT_installer}"
+
 if [ "${KOPT_installer}" != "yes"]; then
 	ebegin Deriving AMD-SEV decryption key
 	$MOCK modprobe sev-guest
@@ -670,6 +672,9 @@ if [ "${KOPT_installer}" != "yes"]; then
 	                /dev/mapper/luks verified-root /dev/sda2 "$KOPT_roothash"
 	       KOPT_root=/dev/mapper/verified-root
 	eend $?
+else 
+	ebegin Bypassing SEV-related boot routine, we an installer
+	eend 0
 fi
 
 # check if root=... was set
