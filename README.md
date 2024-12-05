@@ -46,6 +46,11 @@ derived key.
 > 
 > In production, the image will not support any form of remote login.
 
+> [!NOTE]
+> The run scripts assume QEMU for AMD SEV has been placed in a well-known directory, `/root/AMDSEV/qemu/build/qemu-system-x86_64`.
+>
+> Users can override that path by exporting the `QEMU_SEV_PATH` variable.
+
 1. build the kernel image and initramfs:
    ```
    make kernel 

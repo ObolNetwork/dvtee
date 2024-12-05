@@ -1,6 +1,7 @@
 #!/bin/bash
 
-/root/snp/setup/AMDSEV/qemu/build/qemu-system-x86_64 \
+QEMU=${QEMU_SEV_PATH:=/root/AMDSEV/qemu/build/qemu-system-x86_64}
+$QEMU \
 --enable-kvm \
 -cpu EPYC-v4 \
 -machine q35 \
