@@ -23,7 +23,7 @@ if [ $# -eq 1 ]; then
   fi
 fi
 
-CMDLINE_TMPL="root=UUID=ALPUUID ds=nocloud;s=/ci; modules=sd-mod,usb-storage,ext4 rootfstype=ext4 console=ttyS0"
+CMDLINE_TMPL="root=UUID=ALPUUID ds=nocloud;s=/ci; modules=sd-mod,usb-storage,ext4 rootfstype=ext4 console=ttyS0 installer=yes"
 
 sudo modprobe nbd
 
