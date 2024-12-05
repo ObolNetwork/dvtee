@@ -44,7 +44,7 @@ sudo cp installer/install.sh installer/installer-root-image/ci
 sudo cp installer/setup-alpine-answers installer/installer-root-image/ci
 sudo cp -r runtime installer/installer-root-image/ci 
 
-if [ -z "${USER_INSTALL}" ]; then 
+if [ -n "${USER_INSTALL}" ]; then 
   sudo mkdir -p installer/user-install
   sudo cp -r $USER_INSTALL/* installer/user-install
 fi
