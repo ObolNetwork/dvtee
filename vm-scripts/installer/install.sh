@@ -69,6 +69,10 @@ mkdir -p /mnt/root/ci
 cp -r /ci/runtime/* /mnt/root/ci
 cp /ci/linux-mainline-sev-6.11-r1.apk /mnt/root/ci/linux-mainline-sev-6.11-r1.apk
 
+if [ -e /ci/user-install ]; then
+   cp -r /ci/user-install /mnt/root/ci
+fi
+
 # prepare for chroot
 mkdir -p /mnt/root/proc /mnt/root/sys /mnt/root/dev
 mount -t proc none /mnt/root/proc
@@ -125,7 +129,7 @@ sed -i 's|\/[ \t]*ext4[ \t]*rw,relatime|/ ext4 ro,noatime|g' /etc/fstab
 EOF
 
 cat << EOF | chroot /mnt/root
-   # Check if there is a user-install.sh script in /ci/runtime/user-install
+   # Check if there is a user-install.sh script in /ci/user-install
    if [ -e /ci/user-install/user-install.sh ]; then
       pushd /ci/user-install/
       sh /ci/user-install/user-install.sh
