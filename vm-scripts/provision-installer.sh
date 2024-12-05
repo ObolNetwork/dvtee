@@ -7,6 +7,22 @@ if [ "$1" = "clean" ]; then
   exit 0
 fi
 
+USER_INSTALL=
+
+# if there's exactly an argument that isn't "clean", use it as the directory to fetch
+# user-install data from.
+if [ $# -eq 1 ]; then
+  # check that there is a "user-install.sh" file in the directory.
+  # if it's there, assign $1 to USER_INSTALL, so that it can be copied later to the CI
+  # directory.
+  if [ -e $1/user-install.sh ]; then
+    USER_INSTALL=$1
+  else
+    echo "User install directory specified, but it doesn't contain an 'user-install.sh' script."
+    exit 42
+  fi
+fi
+
 CMDLINE_TMPL="root=UUID=ALPUUID ds=nocloud;s=/ci; modules=sd-mod,usb-storage,ext4 rootfstype=ext4 console=ttyS0"
 
 sudo modprobe nbd
@@ -27,6 +43,12 @@ sudo cp installer/meta-data installer/installer-root-image/ci
 sudo cp installer/install.sh installer/installer-root-image/ci
 sudo cp installer/setup-alpine-answers installer/installer-root-image/ci
 sudo cp -r runtime installer/installer-root-image/ci 
+
+if [ -z "${USER_INSTALL}" ]; then 
+  sudo mkdir -p installer/user-install
+  sudo cp -r $USER_INSTALL/* installer/user-install
+fi
+
 sudo cp ../out/x86_64/linux-mainline-sev-6.11-r1.apk installer/installer-root-image/ci
 sync
 sudo umount installer/installer-root-image

@@ -60,9 +60,7 @@ mount ${DEST}3 /mnt/root/var
 mount ${DEST}4 /mnt/root/home
 setup-disk -m sys -v -k lts /mnt/root
 
-# enable cloud-init on the destination drive
-#chroot /mnt/root setup-cloud-init
-#chroot /mnt/root cloud-init clean --logs
+# disable cloud-init on the destination drive
 touch /mnt/root/etc/cloud/cloud-init.disabled
 
 # copy cloud-init over to the new root
@@ -125,6 +123,16 @@ su -c "/home/signer/.cargo/bin/cargo install snpguest" - signer
 # mount root read-only
 sed -i 's|\/[ \t]*ext4[ \t]*rw,relatime|/ ext4 ro,noatime|g' /etc/fstab
 EOF
+
+cat << EOF | chroot /mnt/root
+   # Check if there is a user-install.sh script in /ci/runtime/user-install
+   if [ -e /ci/user-install/user-install.sh ]; then
+      pushd /ci/user-install/
+      sh /ci/user-install/user-install.sh
+      popd
+   fi
+EOF
+
 
 # !!! ALL CHANGES TO ROOT FS MUST HAPPEN BEFORE THIS !!!
 
