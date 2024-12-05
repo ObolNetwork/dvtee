@@ -635,7 +635,9 @@ fi
 # zpool reports /dev/zfs missing if it can't read /etc/mtab
 ln -s /proc/mounts "$ROOT"/etc/mtab
 
-if [ "${KOPT_installer}" = ""]; then
+IS_INSTALLER=${KOPT_installer:?"no"}
+
+if [ ${IS_INSTALLER} = "no"]; then
 	ebegin Deriving AMD-SEV decryption key
 	$MOCK modprobe sev-guest
 
