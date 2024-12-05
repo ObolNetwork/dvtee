@@ -637,7 +637,7 @@ ln -s /proc/mounts "$ROOT"/etc/mtab
 
 IS_INSTALLER="${KOPT_installer:-no}"
 
-if [ ${IS_INSTALLER} = "no"]; then
+if [ ${IS_INSTALLER} = "no" ]; then
 	ebegin Deriving AMD-SEV decryption key
 	$MOCK modprobe sev-guest
 
