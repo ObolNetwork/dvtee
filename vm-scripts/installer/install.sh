@@ -131,9 +131,7 @@ EOF
 cat << EOF | chroot /mnt/root
    # Check if there is a user-install.sh script in /ci/user-install
    if [ -e /ci/user-install/user-install.sh ]; then
-      pushd /ci/user-install/
       sh /ci/user-install/user-install.sh
-      popd
    fi
 EOF
 
