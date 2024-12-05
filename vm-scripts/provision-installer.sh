@@ -45,8 +45,8 @@ sudo cp installer/setup-alpine-answers installer/installer-root-image/ci
 sudo cp -r runtime installer/installer-root-image/ci 
 
 if [ -n "${USER_INSTALL}" ]; then 
-  sudo mkdir -p installer/user-install
-  sudo cp -r $USER_INSTALL/* installer/user-install
+  sudo mkdir -p installer/installer-root-image/ci/user-install
+  sudo cp -r $USER_INSTALL/* installer/installer-root-image/ci/user-install
 fi
 
 sudo cp ../out/x86_64/linux-mainline-sev-6.11-r1.apk installer/installer-root-image/ci
