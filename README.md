@@ -2,6 +2,13 @@
 
 Run a web3signer-enabled signing software in an AMD SEV-SNP virtual machine.
 
+## Requirements
+
+To run this repository on Ubuntu, you need:
+ - guestfs-tools
+ - systemd-ukify
+ - systemd-boot
+
 ## Building a SEV-enabled Alpine Linux kernel
 
 Run:
