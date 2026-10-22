@@ -1,88 +1,130 @@
-# `sev-signer`
+![Obol Logo](https://obol.org/obolnetwork.png)
 
-Run a web3signer-enabled signing software in an AMD SEV-SNP virtual machine.
+<h1 align="center">TEE Signer<br/>A Web3Signer-compatible remote signer for confidential VMs</h1>
+
+<p align="center">
+<a href="https://github.com/ObolNetwork/sev-signer/actions/workflows/signer.yml"><img src="https://github.com/ObolNetwork/sev-signer/actions/workflows/signer.yml/badge.svg" alt="CI"></a>
+<a href="LICENSE"><img src="https://img.shields.io/badge/License-Apache%202.0-blue.svg" alt="License: Apache 2.0"></a>
+<img src="https://img.shields.io/badge/status-experimental-orange.svg" alt="Status: experimental">
+</p>
+
+This repo holds a BLS remote signer for [Obol](https://obol.org) [distributed validators](https://docs.obol.org/docs/int/key-concepts).
+The signer is built to run inside a confidential VM. On AMD SEV-SNP, the host that runs the VM can't read
+the key shares or use the signer to produce slashable signatures. It also holds tooling to build that guest
+image. Intel TDX and Arm CCA support is planned.
+
+The validator client talks to the signer through the standard [Web3Signer](https://docs.web3signer.consensys.io/)
+API, so Lighthouse, Teku, Lodestar and the other validator clients work unchanged. Before trusting a signer,
+an operator asks the hardware for an attestation report. The report proves which software is running and
+binds the TLS key and validator keys to it.
+
+![tee-signer architecture](docs/images/architecture.svg)
 
 > [!WARNING]
-> The guest image built by this repository is a prototype and is **not safe for keys** as built. See
-> [ROADMAP.md](ROADMAP.md) for the assessment and plan. The signer itself lives in [`signer/`](signer/).
+> **Experimental. Not for mainnet keys.**
+> * The signer has been tested against independent test vectors, but it has not yet run on SEV-SNP hardware.
+> * The guest image in [`vm-scripts/`](vm-scripts/) is an early prototype and is **not safe for keys** as built.
+>
+> See [ROADMAP.md](ROADMAP.md) for the full assessment and the path to production.
 
-## Requirements
+## How it works
 
-To run this repository on Ubuntu, you need:
- - guestfs-tools
- - systemd-ukify
- - systemd-boot
+| | |
+|---|---|
+| **Signs only what it can verify** | Every signing root is recomputed from the typed request, with the domain chosen by request type. The signer never signs a 32-byte root supplied by the client, so a compromised validator client can't use it as a signing oracle. |
+| **Slashing protection inside the TEE** | Keeps EIP-3076 watermarks per key and writes them to disk before releasing a signature. Interchange files can be imported and exported. |
+| **Keys stay in the guest** | Run `charon dkg` inside the VM, and key shares are created on its encrypted disk. They are never exported. If a node is lost, the cluster replaces it with `charon edit replace-operator`. |
+| **Attested TLS** | TLS terminates inside the guest. `GET /api/v1/tee/attestation?nonce=…` returns a hardware report whose REPORT_DATA commits to the nonce, the TLS certificate and the BLS public keys. |
+| **Vendor neutral** | Evidence comes from Linux configfs-tsm, which serves SEV-SNP today and TDX and CCA with the same code. |
+| **Small trusted code base** | About 2,500 lines of Rust. Uses blst and rustls, with no consensus-types library. |
 
-## Building a SEV-enabled Alpine Linux kernel
+**Supported request types:** every Web3Signer eth2 type through Fulu.
+* `ATTESTATION`, `BLOCK_V2`, `RANDAO_REVEAL`, `AGGREGATION_SLOT`.
+* `AGGREGATE_AND_PROOF` and `AGGREGATE_AND_PROOF_V2`.
+* The three sync committee types.
+* `VOLUNTARY_EXIT` (EIP-7044), `VALIDATOR_REGISTRATION` and `DEPOSIT`.
 
-Run:
+Signing roots and signatures are checked byte for byte against vectors generated with
+[go-eth2-client](https://github.com/attestantio/go-eth2-client) and herumi BLS, the same stack charon uses.
 
+## Quickstart
+
+```sh
+cd signer
+cargo build --release
+
+./target/release/tee-signer serve \
+  --network hoodi \
+  --keystores-dir /path/to/.charon/validator_keys \
+  --data-dir ./data \
+  --listen 127.0.0.1:9000
 ```
-make kernel
+
+**Point your validator client at it.** Use `https://127.0.0.1:9000` as the Web3Signer URL, and trust the
+certificate generated at `./data/tls/cert.pem`.
+
+**Require client certificates.** Add `--tls-known-clients knownClients.txt`, which uses Web3Signer's format.
+
+**Check a running signer.**
+
+```sh
+NONCE=$(openssl rand -hex 32)
+curl --cacert data/tls/cert.pem "https://127.0.0.1:9000/api/v1/tee/attestation?nonce=$NONCE" > evidence.json
+./target/release/tee-signer verify-evidence --evidence evidence.json --nonce $NONCE --expected-measurement <hex>
 ```
 
-The `Makefile` will build an Alpine Linux-based Docker image builder, compile a Linux kernel tailored to be run as a
-guest in an AMD SEV-SNP virtual machine, and an initramfs with all the tooling needed to decrypt its VM disk with a
-derived key.
+See [`signer/README.md`](signer/README.md) for every option, the API reference and testing.
 
+## Repository layout
 
-## Other `Makefile` targets
+| Path | What it is |
+|------|------------|
+| [`signer/`](signer/) | `tee-signer`, the Rust signing service |
+| [`vm-scripts/`](vm-scripts/), [`linux-mainline-sev-src/`](linux-mainline-sev-src/) | Prototype tooling for the SEV-SNP guest image: kernel, initramfs, dm-verity root and installer |
+| [`poc/`](poc/) | The original proof of concept: DKG and stock Web3Signer in an SNP guest |
+| [ARCHITECTURE.md](ARCHITECTURE.md) | Measured boot and disk sealing design for the guest image |
+| [ROADMAP.md](ROADMAP.md) | Status, known issues and the path to production |
 
- - `just-kernel`: builds just the kernel image and packages, bypassing initramfs
- - `just-initramfs`: builds just the initramfs, bypassing the kernel image and packages
- - `docker-image`: builds the Docker image used to compile the initramfs and kernel images, packages
- - `kernel-checksum`: builds checksums for the Alpine build system to use during the kernel build process
- - `clean`: cleans the `out` directory
+## Building the prototype guest image
 
-
-## How to use
-
-> [!NOTE]
-> As of now this process does not allow for SSH access, the terminal you see at the end of this process is your only
-> way of accessing the encrypted VM.
+> [!CAUTION]
+> This image is for development on SEV-SNP hardware only.
+> * It has default logins (`root:root`, `signer:signer`) and a console shell.
+> * Its writable partitions are unencrypted.
 >
-> This issue will be addressed at a later date.
+> [ROADMAP.md](ROADMAP.md) explains the replacement plan.
 
-> [!NOTE]
-> The default user logins are `root`:`root` and `signer`:`signer`.
->
-> `signer` user has `doas` privileges, no password needed.
-> 
-> In production, the image will not support any form of remote login.
+**Requirements.**
+* Ubuntu with `guestfs-tools`, `systemd-ukify` and `systemd-boot`.
+* An SEV-SNP capable host with QEMU for AMD SEV. Scripts expect QEMU at
+  `/root/AMDSEV/qemu/build/qemu-system-x86_64`; override this with `QEMU_SEV_PATH`.
 
-> [!NOTE]
-> The run scripts assume QEMU for AMD SEV has been placed in a well-known directory, `/root/AMDSEV/qemu/build/qemu-system-x86_64`.
->
-> Users can override that path by exporting the `QEMU_SEV_PATH` variable.
+**Steps.**
 
-1. build the kernel image and initramfs:
-   ```
-   make kernel 
-   ```
-2. move in the `vm-scripts` directory and provision the installer disks:
-   ```
-   cd vm-scripts
-   bash ./provision-installer.sh clean # !!! This command will ERASE any existing VM disk!
-   bash ./provision-installer.sh
-   ```
-3. run the installer VM:
-   ```
-    bash ./run-installer.sh
-   ```
-4. provision the final [UKI](https://wiki.archlinux.org/title/Unified_kernel_image) for the encrypted VM:
-   ```
-   bash ./provision.sh 
-   ```
-5. run the encrypted VM:
-   ```
-   bash ./run.sh 
-   ```
+```sh
+make kernel                                   # SEV guest kernel + initramfs (in Docker)
+cd vm-scripts
+bash ./provision-installer.sh clean          # ERASES any existing VM disks
+bash ./provision-installer.sh [user-install-dir]
+bash ./run-installer.sh                      # installs Alpine, sets up dm-verity
+bash ./provision.sh                          # builds the final UKI with the verity root hash
+bash ./run.sh                                # boots the encrypted VM
+```
 
-## Git Hooks
+**Other `make` targets.**
+* `just-kernel` and `just-initramfs` build one half of `make kernel`.
+* `docker-image` builds the builder image.
+* `kernel-checksum` refreshes the APKBUILD checksums.
+* `clean` empties `out/`.
 
-You can find some useful git hooks in the `.githooks` directory.
-To use them, run the following command after cloning this repository:
+## Contributing
+
+Useful git hooks live in `.githooks`. Enable them with:
 
 ```sh
 git config --local core.hooksPath .githooks
-````
+```
+
+## License
+
+[Apache 2.0](LICENSE)
