@@ -2,6 +2,10 @@
 
 Run a web3signer-enabled signing software in an AMD SEV-SNP virtual machine.
 
+> [!WARNING]
+> The guest image built by this repository is a prototype and is **not safe for keys** as built. See
+> [ROADMAP.md](ROADMAP.md) for the assessment and plan. The signer itself lives in [`signer/`](signer/).
+
 ## Requirements
 
 To run this repository on Ubuntu, you need:
