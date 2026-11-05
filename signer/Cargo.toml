@@ -4,7 +4,8 @@ version = "0.1.0"
 edition = "2024"
 rust-version = "1.88"
 description = "Web3Signer-compatible eth2 BLS signer for confidential VMs"
-license = "Apache-2.0"
+license = "BUSL-1.1"
+publish = false
 
 [dependencies]
 aes = "0.8"
