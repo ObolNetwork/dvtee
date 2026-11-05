@@ -1,0 +1,70 @@
+name: ovmf
+
+# Builds OVMF twice, on different runner images, and fails unless both builds
+# are byte-identical. The summary publishes the firmware hash and the SNP OVMF
+# hash that vm-scripts/measure.sh turns into the guest's launch measurement.
+
+on:
+  push:
+    branches: [main]
+    paths: ["ovmf/**", ".github/workflows/ovmf.yml"]
+  pull_request:
+    paths: ["ovmf/**", ".github/workflows/ovmf.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  build:
+    name: build (${{ matrix.runner }})
+    strategy:
+      matrix:
+        runner: [ubuntu-24.04, ubuntu-22.04]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Build the builder image
+        run: docker build --no-cache -t ovmf-builder ovmf
+      - name: Build OVMF
+        run: |
+          mkdir -p out
+          docker run --rm -v "$PWD/out:/out" ovmf-builder
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ovmf-${{ matrix.runner }}
+          path: out/
+          if-no-files-found: error
+
+  reproducible:
+    name: reproducible build
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: ovmf-*
+      - name: Compare the two builds
+        run: |
+          diff -r ovmf-ubuntu-24.04 ovmf-ubuntu-22.04
+          {
+            echo "### OVMF (reproduced on two runner images)"
+            echo '```'
+            cat ovmf-ubuntu-24.04/OVMF.fd.sha256
+            echo "snp-ovmf-hash $(cat ovmf-ubuntu-24.04/OVMF.snp-ovmf-hash)"
+            cat ovmf-ubuntu-24.04/BUILDINFO
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ovmf
+          path: ovmf-ubuntu-24.04/
+          if-no-files-found: error

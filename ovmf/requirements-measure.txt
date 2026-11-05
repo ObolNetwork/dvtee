@@ -1,0 +1,4 @@
+# sev-snp-measure computes SNP launch measurements. Installed with --no-deps;
+# its one dependency, cryptography, comes from the pinned Ubuntu snapshot.
+sev-snp-measure==0.0.13 \
+    --hash=sha256:feda1aebe69dcbf38e9c636ed1d082bb7dc741fc6969f197d39faddb72b2762d

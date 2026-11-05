@@ -45,7 +45,7 @@ As built, though, the image does not protect a signer:
 | 4 | High | **Host-writable code runs inside the TEE.** `snpguest` is executed from `/home/signer/.cargo/bin`, which lives on the unauthenticated `/home` partition. |
 | 5 | High | **A firmware update bricks the disk.** The key is derived with `--guest_file_select 111111`, which includes TCB version. Any AMD firmware or microcode TCB update changes the key, with no recovery path. |
 | 6 | High | **No attestation flow.** Nothing produces or verifies a report for a remote party, and nothing binds a channel key to it. |
-| 7 | High | **Not reproducible, so there is no expected measurement to compare against.** The committed `OVMF.fd` blob has no provenance. Alpine and kernel 6.11 (EOL) are unpinned, `cargo install snpguest` takes the latest version at build time, and packages are installed with `apk --allow-untrusted`. |
+| 7 | High | **Not reproducible, so there is no expected measurement to compare against.** OVMF is now built reproducibly from pinned edk2 (`ovmf/`); the old blob is gone. Alpine and kernel 6.11 (EOL) are unpinned, `cargo install snpguest` takes the latest version at build time, and packages are installed with `apk --allow-untrusted`. |
 | 8 | Medium | LUKS without integrity (no dm-integrity/AEAD): the host can tamper with or replay ciphertext sectors. There is also no rollback protection for state, which matters for slashing protection. |
 | 9 | Low | The `Makefile` `provision-*`/`run-*` targets `cd` on a separate recipe line, so they run from the wrong directory. |
 
@@ -153,7 +153,7 @@ report offsets come from the specs; they have not been exercised on hardware.
   a data partition on LUKS2 with dm-integrity (AEAD).
 * No shell, no getty, no sshd and no passwords. The only network listener is tee-signer (plus charon
   for DKG). Logs go out over the network or the serial console.
-* Pin and build OVMF (AMD SNP branch) and the kernel from source.
+* Pin and build the kernel from source (OVMF: done, see `ovmf/`).
 * Publish expected launch measurements computed with `sev-snp-measure`.
 * Seal the data key with the SNP derived key using `MEASUREMENT | POLICY` and a pinned **minimum**
   TCB (snpguest `--tcb_version`), not the current TCB. That way firmware updates don't brick the disk
