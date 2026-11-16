@@ -1,6 +1,6 @@
 #!/bin/bash
 
-IP_ADDR="23.83.71.60"
+IP_ADDR="<snp-host-ip>"
 GUEST_SSH_KEY_PATH="./snp-guest-key"
 GUEST_USER="amd"
 HOST_SSH_PORT="10022"
