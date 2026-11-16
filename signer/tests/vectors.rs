@@ -9,11 +9,11 @@ use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use http_body_util::BodyExt;
 use serde::Deserialize;
-use tee_signer::api::{AppState, router};
-use tee_signer::keystore::{self, SecretKey};
-use tee_signer::network::Network;
-use tee_signer::signing::{self, Policy, SignRequest};
-use tee_signer::slashing::SlashingDb;
+use sev_signer::api::{AppState, router};
+use sev_signer::keystore::{self, SecretKey};
+use sev_signer::network::Network;
+use sev_signer::signing::{self, Policy, SignRequest};
+use sev_signer::slashing::SlashingDb;
 use tower::ServiceExt;
 
 #[derive(Deserialize)]

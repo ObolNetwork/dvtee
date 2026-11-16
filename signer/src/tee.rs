@@ -9,7 +9,7 @@
 //! The 64-byte REPORT_DATA binds the evidence to this signer instance:
 //!
 //! ```text
-//! SHA-512( "obol-tee-signer/attestation/v1"
+//! SHA-512( "obol-sev-signer/attestation/v1"
 //!        || nonce                       (32 bytes, verifier chosen)
 //!        || SHA-256(TLS certificate DER)
 //!        || SHA-256(sorted BLS pubkeys) )
@@ -25,7 +25,7 @@ use std::path::{Path, PathBuf};
 use sha2::{Digest, Sha256, Sha512};
 
 const TSM_REPORT_DIR: &str = "/sys/kernel/config/tsm/report";
-const BINDING_DOMAIN: &[u8] = b"obol-tee-signer/attestation/v1";
+const BINDING_DOMAIN: &[u8] = b"obol-sev-signer/attestation/v1";
 
 pub fn report_data(nonce: &[u8; 32], tls_cert_der: &[u8], pubkeys: &[[u8; 48]]) -> [u8; 64] {
     let mut sorted = pubkeys.to_vec();
@@ -85,7 +85,7 @@ pub fn get_evidence(report_data: &[u8; 64]) -> Result<Evidence, TeeError> {
 
     let mut nonce = [0u8; 8];
     getrandom(&mut nonce)?;
-    let entry = Entry(base.join(format!("tee-signer-{}", hex::encode(nonce))));
+    let entry = Entry(base.join(format!("sev-signer-{}", hex::encode(nonce))));
     fs::create_dir(&entry.0)?;
 
     fs::write(entry.0.join("inblob"), report_data)?;

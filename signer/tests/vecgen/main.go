@@ -1,5 +1,5 @@
 // Command vecgen produces cross-implementation test vectors for the Rust
-// tee-signer: Web3Signer request bodies, the expected signing roots computed
+// sev-signer: Web3Signer request bodies, the expected signing roots computed
 // with go-eth2-client's SSZ implementation, and the expected BLS signatures
 // computed with herumi BLS. It also writes EIP-2335 keystores produced by the
 // same encryptor charon uses.
@@ -329,7 +329,7 @@ func main() {
 		must(err)
 		ks := map[string]any{
 			"crypto":      crypto,
-			"description": "tee-signer test vector",
+			"description": "sev-signer test vector",
 			"pubkey":      hex.EncodeToString(pk),
 			"path":        "m/12381/3600/0/0/0",
 			"uuid":        fmt.Sprintf("00000000-0000-4000-8000-00000000000%d", i),

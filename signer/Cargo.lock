@@ -1150,6 +1150,38 @@ dependencies = [
 ]
 
 [[package]]
+name = "sev-signer"
+version = "0.1.0"
+dependencies = [
+ "aes",
+ "anyhow",
+ "axum",
+ "axum-server",
+ "blst",
+ "clap",
+ "ctr",
+ "hex",
+ "hmac",
+ "http-body-util",
+ "pbkdf2",
+ "rcgen",
+ "rustls",
+ "scrypt",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "thiserror",
+ "tokio",
+ "tower",
+ "tower-http",
+ "tracing",
+ "tracing-subscriber",
+ "unicode-normalization",
+ "zeroize",
+]
+
+[[package]]
 name = "sha2"
 version = "0.10.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1256,38 +1288,6 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.119",
-]
-
-[[package]]
-name = "tee-signer"
-version = "0.1.0"
-dependencies = [
- "aes",
- "anyhow",
- "axum",
- "axum-server",
- "blst",
- "clap",
- "ctr",
- "hex",
- "hmac",
- "http-body-util",
- "pbkdf2",
- "rcgen",
- "rustls",
- "scrypt",
- "serde",
- "serde_json",
- "sha2",
- "tempfile",
- "thiserror",
- "tokio",
- "tower",
- "tower-http",
- "tracing",
- "tracing-subscriber",
- "unicode-normalization",
- "zeroize",
 ]
 
 [[package]]

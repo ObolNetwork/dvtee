@@ -1,4 +1,4 @@
-# tee-signer
+# sev-signer
 
 A Web3Signer-compatible eth2 BLS remote signer, built to run inside a confidential VM. It targets
 AMD SEV-SNP today, and Intel TDX and Arm CCA through Linux configfs-tsm. See `../ROADMAP.md` for
@@ -8,10 +8,10 @@ status and the remaining work.
 
 ```sh
 cargo build --release
-./target/release/tee-signer serve \
+./target/release/sev-signer serve \
   --network hoodi \
   --keystores-dir /path/to/.charon/validator_keys \
-  --data-dir /var/lib/tee-signer \
+  --data-dir /var/lib/sev-signer \
   --listen 0.0.0.0:9000 \
   --tls-san signer.internal \
   --tls-known-clients knownClients.txt   # optional mTLS
@@ -21,7 +21,7 @@ cargo build --release
   `<data-dir>/tls/`. Configure the validator client to trust `cert.pem`. In a TEE deployment, obtain
   the certificate from attestation evidence rather than from the disk.
 * **Development without TLS.** `--insecure-http` serves plain HTTP. It disables attestation.
-* **Configuration from the environment.** Every flag also reads a `TEE_SIGNER_*` environment variable
+* **Configuration from the environment.** Every flag also reads a `SEV_SIGNER_*` environment variable
   (see `--help`).
 
 ## API
@@ -48,7 +48,7 @@ compared against the computed one.
 ```sh
 NONCE=$(openssl rand -hex 32)
 curl --cacert cert.pem "https://signer:9000/api/v1/tee/attestation?nonce=$NONCE" > evidence.json
-tee-signer verify-evidence --evidence evidence.json --nonce $NONCE --expected-measurement <hex>
+sev-signer verify-evidence --evidence evidence.json --nonce $NONCE --expected-measurement <hex>
 # then verify the report's hardware signature, e.g. for SEV-SNP:
 #   jq -r .report evidence.json | xxd -r -p > report.bin   (strip the 0x prefix first)
 #   snpguest fetch ca ...; snpguest fetch vcek ...; snpguest verify attestation ...
@@ -66,7 +66,7 @@ It does **not** verify the AMD or Intel signature chain yet.
 * **Storage.** One JSON watermark file per key in `<data-dir>/slashing/`, pinned to the network's
   genesis validators root.
 * **Import.** Import EIP-3076 history with `--slashing-protection-import file.json` at startup.
-* **Export.** Export it with `tee-signer slashing-export --data-dir … --network …`.
+* **Export.** Export it with `sev-signer slashing-export --data-dir … --network …`.
 
 ## Tests
 
