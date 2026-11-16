@@ -1,0 +1,40 @@
+version: 2
+updates:
+- package-ecosystem: "cargo"
+  directory: "/signer"
+  schedule:
+    interval: "daily"
+  cooldown:
+    default-days: 7
+  groups:
+    cargo-dependencies:
+      patterns:
+        - "*"
+- package-ecosystem: "gomod"
+  directory: "/signer/tests/vecgen"
+  schedule:
+    interval: "daily"
+  cooldown:
+    default-days: 7
+  ignore:
+  # Keep in lockstep with charon, which pins the same minor.
+  - dependency-name: "github.com/herumi/bls-eth-go-binary"
+    update-types: ["version-update:semver-major","version-update:semver-minor"]
+  # Replaced by the ObolNetwork fork in go.mod; bumping the require is a no-op.
+  - dependency-name: "github.com/attestantio/go-eth2-client"
+  groups:
+    go-dependencies:
+      patterns:
+        - "*"
+- package-ecosystem: "docker"
+  directories:
+    - "/"
+    - "/signer"
+  schedule:
+    interval: "daily"
+  cooldown:
+    default-days: 7
+  groups:
+    docker-dependencies:
+      patterns:
+        - "*"

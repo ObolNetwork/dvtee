@@ -4,7 +4,7 @@
 
 <p align="center">
 <a href="https://github.com/ObolNetwork/sev-signer/actions/workflows/signer.yml"><img src="https://github.com/ObolNetwork/sev-signer/actions/workflows/signer.yml/badge.svg" alt="CI"></a>
-<a href="LICENSE"><img src="https://img.shields.io/badge/License-Apache%202.0-blue.svg" alt="License: Apache 2.0"></a>
+<a href="LICENSE"><img src="https://img.shields.io/badge/License-BUSL--1.1-blue.svg" alt="License: BUSL-1.1"></a>
 <img src="https://img.shields.io/badge/status-experimental-orange.svg" alt="Status: experimental">
 </p>
 
@@ -127,4 +127,11 @@ git config --local core.hooksPath .githooks
 
 ## License
 
-[Apache 2.0](LICENSE)
+[Business Source License 1.1](LICENSE), changing to GPL-3.0 four years after each
+version's release. Production use outside the Additional Use Grant needs a
+commercial license from Obol.
+
+Third-party files keep their own licences: the kernel packaging and patches in
+`linux-mainline-sev-src/` and `initramfs-init` (GPL-2.0, from Alpine aports and
+mkinitfs), and the edk2 firmware built by `ovmf/` (BSD-2-Clause-Patent and its
+submodules' licences).

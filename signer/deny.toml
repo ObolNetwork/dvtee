@@ -1,0 +1,62 @@
+# cargo-deny configuration for the signer.
+# Docs: https://embarkstudios.github.io/cargo-deny/
+#
+# Run locally from signer/: `cargo deny --locked check`
+
+[graph]
+# Evaluate the full dependency graph (all targets, incl. dev-dependencies) so
+# nothing slips through on a platform we don't happen to build on in CI.
+all-features = true
+
+[output]
+feature-depth = 1
+
+[advisories]
+version = 2
+# Vulnerability advisories are always denied in version 2. Unsound and yanked
+# crates are errors; unmaintained crates are errors anywhere in the graph.
+unmaintained = "all"
+unsound = "all"
+yanked = "deny"
+# Ignoring an advisory requires an entry here with an id and a reason, e.g.
+# { id = "RUSTSEC-0000-0000", reason = "not reachable: ..." }
+ignore = []
+
+[licenses]
+version = 2
+# Permissive licenses only. Do NOT add copyleft (GPL/LGPL/AGPL), weak copyleft
+# (MPL/EPL/CDDL) or source-available licenses here; if a dependency needs one,
+# add a narrowly scoped `[[licenses.exceptions]]` entry with a comment instead.
+#
+# SPDX expressions with OR are satisfied if any alternative is allowed (e.g.
+# `Unlicense OR MIT`, `Apache-2.0 OR BSL-1.0`), so only licenses we actually
+# rely on are listed.
+allow = [
+    "Apache-2.0",
+    "BSD-3-Clause", # subtle, matchit
+    "ISC",          # ring, rustls-webpki, untrusted
+    "MIT",
+    "Unicode-3.0",  # unicode-ident, unicode-normalization (Unicode data tables)
+]
+confidence-threshold = 0.9
+exceptions = []
+
+[licenses.private]
+ignore = true
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+highlight = "all"
+workspace-default-features = "allow"
+external-default-features = "allow"
+allow = []
+deny = []
+skip = []
+skip-tree = []
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []

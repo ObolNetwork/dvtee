@@ -24,5 +24,5 @@ $QEMU \
 -object memory-backend-memfd,id=ram1,size=2048M,share=true,prealloc=false \
 -machine memory-backend=ram1 \
 -object sev-snp-guest,id=sev0,cbitpos=51,reduced-phys-bits=1,kernel-hashes=on \
--bios ./OVMF.fd \
+-bios "${OVMF:-../out/ovmf/OVMF.fd}" \
 -kernel ./vmlinuz-mainline-sev.unsigned.efi

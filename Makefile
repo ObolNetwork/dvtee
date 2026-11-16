@@ -1,4 +1,4 @@
-.PHONY: clean kernel docker-image out-dir kernel-checksum just-kernel just-initramfs provision-installer run-installer
+.PHONY: clean ovmf-image ovmf measure kernel docker-image out-dir kernel-checksum just-kernel just-initramfs provision-installer run-installer
 
 clean:
 	rm -rf out/*
@@ -31,3 +31,15 @@ run-installer:
 	cd vm-scripts
 	bash run-installer.sh
 	cd ..
+
+ovmf-image:
+	docker build -t obolnetwork/ovmf-builder ovmf
+
+# OVMF for SNP guests, built reproducibly from pinned edk2 (ovmf/README.md).
+ovmf: ovmf-image
+	mkdir -p out/ovmf
+	docker run --rm -v $(PWD)/out/ovmf:/out obolnetwork/ovmf-builder
+
+# Expected launch measurement of the guest run.sh starts.
+measure: ovmf-image
+	vm-scripts/measure.sh

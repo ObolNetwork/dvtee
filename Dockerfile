@@ -1,4 +1,8 @@
-FROM alpine:3.20
+# Pinned by digest (multi-arch index for alpine 3.20.10); Dependabot keeps it current.
+# NOTE: Alpine 3.20 reached end of life on 2026-04-01 and no longer gets security
+# fixes. Moving the kernel builder to a supported branch needs the APKBUILD to be
+# re-validated, so it is tracked separately.
+FROM alpine:3.20@sha256:d9e853e87e55526f6b2917df91a2115c36dd7c696a35be12163d44e6e2a4b6bc
 
 RUN apk add alpine-sdk doas bash cryptsetup \
     &&  adduser \

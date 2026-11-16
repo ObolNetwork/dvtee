@@ -1,0 +1,40 @@
+name: govulncheck
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    paths:
+      - "signer/tests/vecgen/**"
+      - ".github/workflows/govulncheck.yml"
+  schedule:
+    # Daily so new Go vulnerabilities surface without a PR.
+    - cron: "37 6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  govulncheck:
+    name: govulncheck (vecgen)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: signer/tests/vecgen
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: signer/tests/vecgen/go.mod
+          cache: false
+      # Version-pinned; the module is verified against sum.golang.org.
+      - run: go install golang.org/x/vuln/cmd/govulncheck@v1.9.0
+      - run: govulncheck -show=traces -test ./...
