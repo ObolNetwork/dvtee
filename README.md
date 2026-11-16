@@ -18,14 +18,16 @@ API, so Lighthouse, Teku, Lodestar and the other validator clients work unchange
 an operator asks the hardware for an attestation report. The report proves which software is running and
 binds the TLS key and validator keys to it.
 
-![tee-signer architecture](docs/images/architecture.svg)
+![sev-signer architecture](docs/images/architecture.svg)
 
 > [!WARNING]
-> **Experimental. Not for mainnet keys.**
-> * The signer has been tested against independent test vectors, but it has not yet run on SEV-SNP hardware.
+> **Experimental. Not for mainnet keys.** Published early so other TEE signer projects can compare designs.
+> * The signer has been tested against independent test vectors, but it has not yet run on SEV-SNP hardware
+>   or been driven end to end by a validator client or charon cluster.
 > * The guest image in [`vm-scripts/`](vm-scripts/) is an early prototype and is **not safe for keys** as built.
+> * It is unaudited.
 >
-> See [ROADMAP.md](ROADMAP.md) for the full assessment and the path to production.
+> See [ROADMAP.md](ROADMAP.md) for the full assessment, [known gaps](ROADMAP.md#known-gaps) and the path to production.
 
 ## How it works
 
@@ -53,7 +55,7 @@ Signing roots and signatures are checked byte for byte against vectors generated
 cd signer
 cargo build --release
 
-./target/release/tee-signer serve \
+./target/release/sev-signer serve \
   --network hoodi \
   --keystores-dir /path/to/.charon/validator_keys \
   --data-dir ./data \
@@ -70,7 +72,7 @@ certificate generated at `./data/tls/cert.pem`.
 ```sh
 NONCE=$(openssl rand -hex 32)
 curl --cacert data/tls/cert.pem "https://127.0.0.1:9000/api/v1/tee/attestation?nonce=$NONCE" > evidence.json
-./target/release/tee-signer verify-evidence --evidence evidence.json --nonce $NONCE --expected-measurement <hex>
+./target/release/sev-signer verify-evidence --evidence evidence.json --nonce $NONCE --expected-measurement <hex>
 ```
 
 See [`signer/README.md`](signer/README.md) for every option, the API reference and testing.
@@ -79,7 +81,7 @@ See [`signer/README.md`](signer/README.md) for every option, the API reference a
 
 | Path | What it is |
 |------|------------|
-| [`signer/`](signer/) | `tee-signer`, the Rust signing service |
+| [`signer/`](signer/) | `sev-signer`, the Rust signing service |
 | [`vm-scripts/`](vm-scripts/), [`linux-mainline-sev-src/`](linux-mainline-sev-src/) | Prototype tooling for the SEV-SNP guest image: kernel, initramfs, dm-verity root and installer |
 | [`poc/`](poc/) | The original proof of concept: DKG and stock Web3Signer in an SNP guest |
 | [ARCHITECTURE.md](ARCHITECTURE.md) | Measured boot and disk sealing design for the guest image |

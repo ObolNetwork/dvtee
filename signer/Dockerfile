@@ -7,7 +7,7 @@ COPY src ./src
 RUN cargo build --release --locked
 
 FROM gcr.io/distroless/cc-debian12:nonroot@sha256:9dac0a79194e45a7da0158a9c6da57b217585af0786db3845d1f0ec1a0dd182f
-COPY --from=build /src/target/release/tee-signer /usr/local/bin/tee-signer
+COPY --from=build /src/target/release/sev-signer /usr/local/bin/sev-signer
 EXPOSE 9000
-ENTRYPOINT ["/usr/local/bin/tee-signer"]
+ENTRYPOINT ["/usr/local/bin/sev-signer"]
 CMD ["serve"]

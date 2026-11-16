@@ -6,11 +6,11 @@ use anyhow::{Context, bail};
 use clap::{Parser, Subcommand};
 use sha2::{Digest, Sha256};
 
-use tee_signer::api::{self, AppState};
-use tee_signer::network::Network;
-use tee_signer::signing::Policy;
-use tee_signer::slashing::SlashingDb;
-use tee_signer::{keystore, tee, tls};
+use sev_signer::api::{self, AppState};
+use sev_signer::network::Network;
+use sev_signer::signing::Policy;
+use sev_signer::slashing::SlashingDb;
+use sev_signer::{keystore, tee, tls};
 
 /// Web3Signer-compatible BLS remote signer designed to run inside a
 /// confidential VM (AMD SEV-SNP today; Intel TDX / Arm CCA via configfs-tsm).
@@ -29,11 +29,11 @@ enum Cmd {
     SlashingExport {
         #[arg(
             long,
-            env = "TEE_SIGNER_DATA_DIR",
-            default_value = "/var/lib/tee-signer"
+            env = "SEV_SIGNER_DATA_DIR",
+            default_value = "/var/lib/sev-signer"
         )]
         data_dir: PathBuf,
-        #[arg(long, env = "TEE_SIGNER_NETWORK")]
+        #[arg(long, env = "SEV_SIGNER_NETWORK")]
         network: Network,
     },
     /// Offline check of evidence fetched from /api/v1/tee/attestation: the
@@ -54,42 +54,42 @@ enum Cmd {
 
 #[derive(clap::Args)]
 struct ServeArgs {
-    #[arg(long, env = "TEE_SIGNER_LISTEN", default_value = "127.0.0.1:9000")]
+    #[arg(long, env = "SEV_SIGNER_LISTEN", default_value = "127.0.0.1:9000")]
     listen: SocketAddr,
     /// Holds the slashing protection database and TLS key. Must be on the
     /// encrypted, measured disk in a TEE deployment.
     #[arg(
         long,
-        env = "TEE_SIGNER_DATA_DIR",
-        default_value = "/var/lib/tee-signer"
+        env = "SEV_SIGNER_DATA_DIR",
+        default_value = "/var/lib/sev-signer"
     )]
     data_dir: PathBuf,
     /// EIP-2335 keystores with sibling .txt password files (charon's
     /// validator_keys layout).
-    #[arg(long, env = "TEE_SIGNER_KEYSTORES_DIR")]
+    #[arg(long, env = "SEV_SIGNER_KEYSTORES_DIR")]
     keystores_dir: PathBuf,
     /// mainnet, hoodi, sepolia, or custom:<gvr>:<genesis_fork>:<capella_fork>.
-    #[arg(long, env = "TEE_SIGNER_NETWORK")]
+    #[arg(long, env = "SEV_SIGNER_NETWORK")]
     network: Network,
     /// Serve plain HTTP. Only for development: TLS must terminate inside the
     /// TEE for attestation to mean anything.
-    #[arg(long, env = "TEE_SIGNER_INSECURE_HTTP")]
+    #[arg(long, env = "SEV_SIGNER_INSECURE_HTTP")]
     insecure_http: bool,
     /// Subject alternative names for the generated TLS certificate.
-    #[arg(long = "tls-san", env = "TEE_SIGNER_TLS_SANS", value_delimiter = ',', default_values_t = ["localhost".to_string(), "127.0.0.1".to_string()])]
+    #[arg(long = "tls-san", env = "SEV_SIGNER_TLS_SANS", value_delimiter = ',', default_values_t = ["localhost".to_string(), "127.0.0.1".to_string()])]
     tls_sans: Vec<String>,
     /// Require client certificates whose SHA-256 fingerprints are listed in
     /// this file (Web3Signer knownClients format).
-    #[arg(long, env = "TEE_SIGNER_TLS_KNOWN_CLIENTS")]
+    #[arg(long, env = "SEV_SIGNER_TLS_KNOWN_CLIENTS")]
     tls_known_clients: Option<PathBuf>,
-    #[arg(long, env = "TEE_SIGNER_ALLOW_VOLUNTARY_EXITS", default_value_t = true, action = clap::ArgAction::Set)]
+    #[arg(long, env = "SEV_SIGNER_ALLOW_VOLUNTARY_EXITS", default_value_t = true, action = clap::ArgAction::Set)]
     allow_voluntary_exits: bool,
-    #[arg(long, env = "TEE_SIGNER_ALLOW_DEPOSITS", default_value_t = false, action = clap::ArgAction::Set)]
+    #[arg(long, env = "SEV_SIGNER_ALLOW_DEPOSITS", default_value_t = false, action = clap::ArgAction::Set)]
     allow_deposits: bool,
     /// EIP-3076 interchange file to import before serving.
-    #[arg(long, env = "TEE_SIGNER_SLASHING_PROTECTION_IMPORT")]
+    #[arg(long, env = "SEV_SIGNER_SLASHING_PROTECTION_IMPORT")]
     slashing_protection_import: Option<PathBuf>,
-    #[arg(long, env = "TEE_SIGNER_LOG_JSON")]
+    #[arg(long, env = "SEV_SIGNER_LOG_JSON")]
     log_json: bool,
 }
 
@@ -170,7 +170,7 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         keys = state.keys.len(),
         tls = tls.is_some(),
         mtls = args.tls_known_clients.is_some(),
-        "tee-signer serving"
+        "sev-signer serving"
     );
 
     let handle = axum_server::Handle::new();

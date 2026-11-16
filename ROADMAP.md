@@ -1,20 +1,16 @@
 # sev-signer: status and roadmap
 
-Assessment from October 2026 of where `sev-signer` (and its siblings `consigner`, `dvtee`,
-`remote-signer`) stand as the basis for a Web3Signer-like signer in AMD SEV-SNP (later Intel TDX / Arm
-CCA) for Obol distributed validators. It also lists what the `feat/tee-signer` branch adds, and what is
-left before it can be deployed in production.
+Where `sev-signer` stands as a Web3Signer-compatible BLS signer for Obol distributed validators,
+running in AMD SEV-SNP (later Intel TDX and Arm CCA), and what is left before it can hold real keys.
+It was first written in October 2026 and is updated as the work moves.
+
+This repo is published early, before end-to-end testing or hardening, so that others building TEE
+signers can compare designs. Nothing here has run on SEV-SNP hardware or been audited. See
+[Known gaps](#known-gaps) before drawing conclusions from the code.
 
 ## TL;DR
 
-* **No repo was close.** Before this branch, no repo had a working, correct, TEE-hosted BLS signer:
-  * `sev-signer` had a hardened-image idea but no signer.
-  * The PoC (`poc/`, `dvtee`) had a signer (stock Web3Signer) but no hardening.
-  * `consigner`, the Rust signer, produced invalid signatures for several duty types and had no
-    slashing protection.
-* **`remote-signer` is a different product.** It is a secp256k1 EVM wallet signer for Obol Stack
-  agents. It is reasonable code with good engineering hygiene, but nothing in it signs validator duties.
-* **This branch adds `signer/` (`tee-signer`).** It is a small Rust Web3Signer-compatible eth2 signer
+* **The signer (`signer/`, binary `sev-signer`) is a small Rust Web3Signer-compatible eth2 signer**
   with:
   * recomputed signing roots, cross-checked against go-eth2-client and herumi BLS for all 13 request
     types;
@@ -24,10 +20,13 @@ left before it can be deployed in production.
     BLS key set.
 * **The biggest remaining gap is the guest image, not the signer.** The current Alpine image is unsafe
   as built (details below). Replace it with a reproducible mkosi image rather than patching it.
+* **It is meant to be one share in a DV cluster, not a solo signer.** The design leans on the cluster
+  for key generation (DKG inside the guest), recovery (reshare) and, later, anti-rollback. See
+  [Where it fits](#where-it-fits-one-diverse-share-in-a-cluster).
 
 ## Findings
 
-### sev-signer (image tooling, last touched January 2025)
+### Guest image tooling (2024 prototype, last touched January 2025)
 
 Good ideas worth keeping:
 
@@ -49,57 +48,14 @@ As built, though, the image does not protect a signer:
 | 8 | Medium | LUKS without integrity (no dm-integrity/AEAD): the host can tamper with or replay ciphertext sectors. There is also no rollback protection for state, which matters for slashing protection. |
 | 9 | Low | The `Makefile` `provision-*`/`run-*` targets `cd` on a separate recipe line, so they run from the wrong directory. |
 
-`poc/` and `dvtee` (an earlier copy of the same PoC) run stock `consensys/web3signer:develop`
-(unpinned) inside an Ubuntu SNP guest that the operator administers over SSH:
+`poc/` runs stock Web3Signer inside an Ubuntu SNP guest that the operator administers over SSH, with
+slashing protection off and attestation verification left as a TODO. It demonstrates the
+DKG-in-TEE flow but provides no security boundary.
 
-* `eth2.slashing-protection-enabled: false`.
-* Keystore passwords are `chmod 444` next to the keystores.
-* `StrictHostKeyChecking no`.
-* The attestation report is fetched, but its verification is a `TODO`.
+Earlier Obol prototypes (an older copy of `poc/`, and a Rust Web3Signer prototype from 2024) were
+reviewed at the same time and are superseded by `signer/`.
 
-They are useful as a demo of the DKG-in-TEE flow, but provide no security boundary.
-
-### consigner (Rust Web3Signer PoC, October 2024)
-
-* **Wrong signatures:**
-  * RANDAO is signed with `DOMAIN_BEACON_PROPOSER`.
-  * `AGGREGATE_AND_PROOF` is signed with `DOMAIN_SELECTION_PROOF`.
-  * Deneb block headers use `state_root` as `body_root`.
-  * The domain epoch is always `fork.epoch`, so the previous fork version is never used.
-  * Exits and validator registrations hard-code mainnet constants.
-* **Root handling is inverted.** `has_provided_root = root.is_empty()`, so a client-provided
-  `signingRoot` is ignored. Most types also `unwrap()` it and panic when it is absent.
-* **Not up to date:**
-  * Sync committee types are `todo!()`.
-  * It is pinned to Lighthouse 5.3, so it has no Electra or Fulu support.
-* **No slashing protection.** The EIP-3076 payload is parsed on import, then dropped.
-* **Secret key exposure:**
-  * Keys are written in cleartext to SurrealDB/RocksDB.
-  * They are logged at debug level (`log::debug!("{key:?}")` on a struct deriving `Debug` that
-    includes the secret).
-  * The keystore import endpoint has no authentication or TLS.
-
-Recommendation: archive it. `signer/` supersedes it.
-
-### remote-signer (Obol Stack EVM wallet signer, active)
-
-* **Engineering hygiene is good:**
-  * `secrecy` for secrets;
-  * a distroless, non-root image;
-  * CI, cargo-deny and renovate;
-  * constant-time bearer token comparison;
-  * integration tests.
-* **Not relevant to validators.** It signs secp256k1 transactions and messages, so nothing in it
-  helps BLS validator signing.
-* **Things to tighten for its own use case:**
-  * It binds `0.0.0.0` with auth off by default.
-  * `/sign/{address}/hash` is a blind signing oracle.
-  * One password unlocks every keystore.
-* **TEE fit.** It could later share the same confidential-VM base image (agent wallets in a TEE), but
-  it does not belong on the validator signer's critical path.
-* **Local testing.** Its dev-dependency `reqwest` needs `libssl-dev` to build tests locally.
-
-## What `signer/` (tee-signer) does now
+## What the signer does now
 
 * **Web3Signer eth2 API.** `POST /api/v1/eth2/sign/{pubkey}`, `GET /api/v1/eth2/publicKeys`,
   `/upcheck` and `/healthcheck`, with text or JSON responses selected by `Accept`.
@@ -123,13 +79,40 @@ Recommendation: archive it. `signer/` supersedes it.
   both support both.
 * **Attestation.** `GET /api/v1/tee/attestation?nonce=` uses configfs-tsm, so the same code serves
   SEV-SNP, TDX and CCA. REPORT_DATA binds the nonce, the TLS certificate and the BLS key set.
-* **Offline evidence check.** `tee-signer verify-evidence` checks the binding, the debug policy bit and
+* **Offline evidence check.** `sev-signer verify-evidence` checks the binding, the debug policy bit and
   the expected measurement.
 * **Footprint.** About 2,500 lines of Rust including unit tests. There is no consensus types library; SSZ merkleization is
   hand-rolled in about 100 lines and covered by the vectors.
 
 **Not yet verified:** it has not run inside a real SNP guest. The configfs-tsm path and the SNP and TDX
 report offsets come from the specs; they have not been exercised on hardware.
+
+## Where it fits: one diverse share in a cluster
+
+Cloud TEE signers, such as [lidofinance/tee-signer](https://github.com/lidofinance/tee-signer) on AWS
+Nitro, Azure SEV-SNP and GCP Confidential Space, seal keys with a cloud KMS policy. sev-signer takes
+the other branch: bare-metal SEV-SNP, with the chip as the sealing root. The two fail in different ways, which
+is the point of running both in one cluster.
+
+| | Cloud-KMS-sealed TEE signers (typical) | sev-signer (target design) |
+|---|---|---|
+| Sealing root | Cloud KMS / Key Vault policy | SNP derived key (`MSG_KEY_REQ`) over measurement, policy and a minimum TCB |
+| Who else can unseal | The cloud vendor and its recovery processes | Nobody but AMD firmware; physical DIMM attacks are out of scope |
+| Key creation | Often a dealer outside the TEE, then import | `charon dkg` inside the guest; the share never exists outside it |
+| Recovery | Re-import of shares kept outside the TEE, or a TEE-to-TEE handover | charon reshare or `replace-operator` |
+| Upgrade | New image key policy, then re-import or handover | Reshare into the new image's measurement |
+| Hosting | Cloud confidential VMs | Bare-metal SNP you control, with your own OVMF and UKI |
+
+Cluster shape guidance that follows from this:
+
+* **No 1-of-1.** Any single TEE signer is a single point of failure for liveness and, with a hostile
+  host, for safety. Use threshold.
+* **Chip-family and vendor diversity.** No chip family, cloud or codebase should hold two shares. If
+  another share runs on SNP in a cloud, run that one on Nitro or TDX instead, so one SNP firmware bug
+  never hits two shares.
+* **Leave liveness headroom.** TEE signers have more ways to be down than a plain key (restarts,
+  attestation, re-provisioning). Size for n − t ≥ 2, so one signer can be mid-upgrade while another
+  fails.
 
 ## Path to production for Obol DVs
 
@@ -144,6 +127,19 @@ report offsets come from the specs; they have not been exercised on hardware.
 3. **A compromised node holds only one share.** Below-threshold compromise cannot produce slashable
    signatures. What the TEE adds is protection for the share against a compromised host (theft,
    cloning, using the signer as an oracle), and in-TEE slashing protection.
+4. **Proposed: peers attest each other's signers** (needs charon changes). Each charon node fetches
+   and verifies its peers' signer evidence at startup and on a timer, and exposes the result as a metric and a cluster health check.
+   The cluster then knows how many of its shares are actually TEE-protected. No single-operator
+   signer can offer that.
+5. **Proposed: the cluster as anti-rollback witness** (needs charon changes). A TEE cannot stop the
+   host from restoring an old disk snapshot, which rolls back slashing watermarks. In a DV, the other nodes know the latest duties the
+   cluster agreed on. After a restart, the signer would refuse to sign until its watermarks are at or
+   above what a threshold of peers report. Phase 3 builds on this. It needs no monotonic counter and
+   no extra infrastructure.
+6. **Clones are a host capability to design for.** A host can boot two guests from the same image.
+   Both pass attestation and, if sealing is to `MEASUREMENT | POLICY`, both derive the same disk key.
+   Within one cluster a clone holds the same share, so it cannot reach threshold on its own. It can
+   still double-sign with that share, which the peer witness above and charon's consensus must catch.
 
 ### Phases
 
@@ -151,7 +147,7 @@ report offsets come from the specs; they have not been exercised on hardware.
 
 * Build the image with **mkosi**: reproducible builds, a UKI, a dm-verity root via systemd-repart, and
   a data partition on LUKS2 with dm-integrity (AEAD).
-* No shell, no getty, no sshd and no passwords. The only network listener is tee-signer (plus charon
+* No shell, no getty, no sshd and no passwords. The only network listener is sev-signer (plus charon
   for DKG). Logs go out over the network or the serial console.
 * Pin and build the kernel from source (OVMF: done, see `ovmf/`).
 * Publish expected launch measurements computed with `sev-snp-measure`.
@@ -165,8 +161,8 @@ report offsets come from the specs; they have not been exercised on hardware.
   measurement, the policy (debug off, SMT/migration policy) and the binding. Wrap
   `snpguest verify` / `sev` crate or ship a Go verifier.
 * Pin the attested TLS certificate in the validator client's web3signer configuration.
-* Optionally, have charon verify the signer's evidence at startup and periodically, and expose it
-  as a metric.
+* Have charon verify peers' signer evidence at startup and periodically, and expose it as a metric
+  (design choice 4).
 
 **Phase 3: hardening the state**
 
@@ -197,3 +193,26 @@ report offsets come from the specs; they have not been exercised on hardware.
   Physical memory attacks (BadRAM, Battering RAM) work against a party with access to the DIMMs. A
   datacenter-level adversary is therefore only partly covered. This matters for the product's
   positioning.
+* **Open decision: bare metal first, or cloud confidential VMs too.** Bare metal you control gives the
+  full story above (own firmware, every boot component measured, the disk sealed to the measurement),
+  but fewer operators can run it. Cloud CVMs are what operators can get, but the cloud supplies the
+  firmware or paravisor and the disk key would come from a cloud vTPM or KMS. That is the cloud-KMS
+  branch in the table above, which other projects already cover. Not decided yet; bare metal is
+  what makes this a diverse share.
+
+## Known gaps
+
+The honest state today. None of these are hidden; most are planned in the phases above.
+
+| Area | State |
+|---|---|
+| Hardware | Never run in a real SNP guest. configfs-tsm reading and the SNP/TDX report offsets come from the specs. |
+| End-to-end | Never driven by a real validator client or charon cluster. Tested with vectors and curl only. |
+| Attestation verification | `verify-evidence` checks the binding, debug bit and measurement, but not the AMD chain (ARK → ASK → VCEK) or the report signature. |
+| Minimum TCB | Not enforced by the verifier or by sealing. |
+| Guest image | The 2024 Alpine image is unsafe for keys (see Findings). The mkosi image is not started. |
+| Anti-rollback | None. A restored disk snapshot rolls back slashing watermarks. |
+| Forks | Request types through Fulu. The new Gloas signing domains (PTC attestations, proposer preferences, payload envelopes) are not implemented. |
+| Exits | `VOLUNTARY_EXIT` is allowed by default for any authorised client. A DV partial exit is harmless below threshold, but production should default to off or gate it. |
+| Operations | No metrics, rate limits or request-parser fuzzing. |
+| Review | Unaudited, with no external review yet. |
