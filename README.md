@@ -1,6 +1,6 @@
 ![Obol Logo](https://obol.org/obolnetwork.png)
 
-<h1 align="center">TEE Signer<br/>A Web3Signer-compatible remote signer for confidential VMs</h1>
+<h1 align="center">SEV Signer<br/>A Web3Signer-compatible remote signer for confidential VMs</h1>
 
 <p align="center">
 <a href="https://github.com/ObolNetwork/sev-signer/actions/workflows/signer.yml"><img src="https://github.com/ObolNetwork/sev-signer/actions/workflows/signer.yml/badge.svg" alt="CI"></a>
