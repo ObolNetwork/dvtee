@@ -109,6 +109,30 @@ fn roots_are_computed_not_trusted() {
     }
 }
 
+/// Lighthouse and Teku send Electra aggregates under the v1
+/// `AGGREGATE_AND_PROOF` type (seen on a devnet, 2026-11). The root must equal
+/// the Go-computed Electra one.
+#[test]
+fn v1_aggregate_type_with_electra_body() {
+    let v = vectors();
+    let v2 = v
+        .vectors
+        .iter()
+        .find(|x| x.name == "aggregate_and_proof_v2_electra")
+        .unwrap();
+    let mut body = v2.request.clone();
+    let inner = body["aggregate_and_proof"]["data"].clone();
+    body["type"] = serde_json::json!("AGGREGATE_AND_PROOF");
+    body["aggregate_and_proof"] = inner;
+    let req: SignRequest = serde_json::from_value(body).unwrap();
+    let p = signing::prepare(&req, &hoodi(), &allow_all()).unwrap();
+    assert_eq!(p.kind, "AGGREGATE_AND_PROOF");
+    assert_eq!(
+        format!("0x{}", hex::encode(p.signing_root)),
+        v2.signing_root
+    );
+}
+
 #[test]
 fn other_network_is_rejected() {
     let v = vectors();

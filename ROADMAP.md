@@ -69,7 +69,7 @@ reviewed at the same time and are superseded by `signer/`.
   plus herumi BLS (`tests/vecgen`) byte for byte.
 * **Network pinning.** Requests whose `genesis_validators_root` differs from the configured network are
   rejected (mainnet, hoodi, sepolia, or custom).
-* **Policy.** Exits are allowed by default (Lido DVs need them); deposits are denied by default.
+* **Policy.** Exits are allowed by default; deposits are denied by default.
 * **Slashing protection.** Per-key low watermarks, fsynced before the signature is released. Supports
   EIP-3076 import at startup and `slashing-export`.
 * **Keystores.** Loads EIP-2335 keystores in charon's `validator_keys/` layout (scrypt and pbkdf2,
@@ -89,6 +89,7 @@ report offsets come from the specs; they have not been exercised on hardware.
 
 ## Where it fits: one diverse share in a cluster
 
+
 Cloud TEE signers, such as [lidofinance/tee-signer](https://github.com/lidofinance/tee-signer) on AWS
 Nitro, Azure SEV-SNP and GCP Confidential Space, seal keys with a cloud KMS policy, so the cloud vendor stays in the trust base for the key itself.
 sev-signer is chip-specific instead: AMD SEV-SNP, with the chip as the sealing root and attestation
@@ -99,10 +100,10 @@ it, not unseal it. The two fail in different ways, which is the point of running
 |---|---|---|
 | Sealing root | Cloud KMS / Key Vault policy | SNP derived key (`MSG_KEY_REQ`) over measurement, policy and a minimum TCB |
 | Who else can unseal | The cloud vendor and its recovery processes | Nobody but AMD firmware; physical DIMM attacks are out of scope |
-| Key creation | Often a dealer outside the TEE, then import | `charon dkg` inside the guest; the share never exists outside it |
+| Key creation | Often a dealer outside the TEE, then import | Charon DKG pushes the share over attested TLS (plan A), or `charon dkg` runs inside the guest (plan B) |
 | Recovery | Re-import of shares kept outside the TEE, or a TEE-to-TEE handover | charon reshare or `replace-operator` |
 | Upgrade | New image key policy, then re-import or handover | Reshare into the new image's measurement |
-| Hosting | AWS Nitro, Azure and GCP confidential VMs | AMD SEV-SNP guests that talk to the chip directly: AWS EC2 SNP instances, or SNP-capable VPS and bare-metal hosts |
+| Hosting | AWS Nitro, Azure and GCP confidential VMs | Operator-controlled AMD SEV-SNP hardware first (owned or rented bare metal); cloud SNP guests that reach the chip directly (AWS EC2) as an option |
 | Attestation trust | Cloud-signed tokens or cloud PKI | The raw SNP report, checked against AMD's chain |
 
 Cluster shape guidance that follows from this:
@@ -120,8 +121,19 @@ Cluster shape guidance that follows from this:
 
 ### DV-specific design choices
 
-1. **Generate shares inside the TEE.** Run `charon dkg` inside the guest so a key share never exists
-   outside it. The PoC already showed this flow.
+1. **Key shares only enter the guest encrypted to it.**
+   * **Plan A: the keymanager API.** `charon dkg --keymanager-address … --keymanager-auth-token …`
+     already pushes new shares to a keymanager instead of writing them to disk. sev-signer would
+     implement the keymanager import endpoint (`POST /eth/v1/keystores`, bearer token as the spec
+     requires) on the mTLS listener.
+     * Charon would first verify the signer's attestation and pin the TLS certificate bound into it.
+       Then the keystore and its password reach only the measured guest.
+     * That is a small extension on charon's side, and possibly in the keymanager API, if we want
+       the share encrypted to a guest key rather than only protected by TLS.
+     * Limit: the share still exists in charon's memory on the DKG host during the ceremony.
+   * **Plan B: `charon dkg` inside the guest.** The share is then generated inside and never exists
+     outside it. The PoC showed this flow. It costs running charon in the image during DKG and
+     reshares.
 2. **Recover by resharing, not by key export.** If a TEE node is lost (hardware failure, a TCB change
    that alters the sealing key, or a cloud stop/start that lands the VM on a different chip), the cluster still signs at threshold, and `charon edit
    replace-operator` / `recreate-private-keys` brings in a replacement. This makes strict sealing
@@ -142,6 +154,15 @@ Cluster shape guidance that follows from this:
    Both pass attestation and, if sealing is to `MEASUREMENT | POLICY`, both derive the same disk key.
    Within one cluster a clone holds the same share, so it cannot reach threshold on its own. It can
    still double-sign with that share, which the peer witness above and charon's consensus must catch.
+7. **Proposed: settings are pinned, not flags.**
+   * The fee recipient for builder registrations, and whether exits are allowed, are fixed when the
+     signer is provisioned. They are stored on the sealed disk.
+   * `VALIDATOR_REGISTRATION` is refused unless its fee recipient matches. The natural source is the
+     cluster lock, which every operator signed.
+   * Exits stay allowed by default (see Known gaps), but flipping that, or changing the fee
+     recipient, needs an explicit operator-signed configuration change, not a restart with a new flag.
+   * In a DV, a change then needs a threshold of operators to confirm it on their own signers, which
+     matches charon's existing `feerecipient sign` flow.
 
 ### Phases
 
@@ -166,6 +187,34 @@ Cluster shape guidance that follows from this:
 * Pin the attested TLS certificate in the validator client's web3signer configuration.
 * Have charon verify peers' signer evidence at startup and periodically, and expose it as a metric
   (design choice 4).
+* **Client authentication in depth: mTLS and a bearer token.**
+  * **Why two secrets.** sev-signer pins client certificates, so a public CA failure can't forge a
+    client. But a client key can still be weakly generated or leak; in October 2026 a public CA's
+    intermediate keys turned out to be derivable from their certificates. A second, independently
+    generated secret covers that case.
+  * **Where it is required.** The keymanager import endpoint (design choice 1) needs the token
+    anyway, because the keymanager API specifies a bearer token.
+  * **Public listener.** `--public-listen` serves health and attestation on a second TLS port with
+    the same certificate and no client authentication, so peers can fetch evidence while signing
+    stays behind mTLS.
+  * **mTLS.** Keep pinned client certificates (`--tls-known-clients`) on by default.
+  * **Bearer token.** Add `--auth-token-file`.
+    * Require `Authorization: Bearer <token>` on `/api/v1/eth2/*`, compared in constant time.
+    * Also accept the token as the password of HTTP Basic auth, because validator clients can only
+      put credentials in the URL (`https://x:<token>@signer`).
+    * Answer missing credentials with `401` and `WWW-Authenticate: Basic`. Teku only sends Basic
+      credentials after that challenge.
+    * The public listener is unaffected.
+    * Never accept the token in a query string, and never log the `Authorization` header or URL
+      userinfo.
+  * **Validator client support** (devnet survey, see [`signer/README.md`](signer/README.md#validator-clients)).
+    No client has a header option. Lighthouse, Prysm and Nimbus send URL credentials as Basic auth
+    on every request; Teku does after a `401` challenge, over HTTPS only. Only Lighthouse and Teku
+    support a client certificate. Lodestar supports neither, so a Lodestar signer is protected only
+    by network isolation until upstream adds one of them.
+  * **Provisioning.** Generate the token in the guest at first start and store it on the sealed disk.
+    Hand it out once, over the attested, mTLS-authenticated channel. Rotate it by restarting with a
+    new file.
 
 **Phase 3: hardening the state**
 
@@ -189,9 +238,10 @@ Cluster shape guidance that follows from this:
 
 ### Hosting
 
-**Decision: AMD SEV-SNP guests that reach the chip directly, on a cloud or a VPS.** The aim is to be
-incrementally better than cloud-KMS signers by taking the cloud out of key custody, not to be
-cloud-agnostic. In practice that means AWS EC2 SNP instances, or SNP-capable VPS and bare-metal hosts.
+**Decision: operator-controlled AMD SEV-SNP hardware first, cloud SNP as an option.** The primary
+target is EPYC (Milan or later) servers the operator owns or rents as bare metal, with our own pinned
+OVMF build. Cloud SNP guests that reach the chip directly (AWS EC2 SNP instances) are a secondary
+target. The aim is to take every third party out of key custody, not to be cloud-agnostic.
 
 * **Why chip-specific.** Only SNP gives the guest a sealing key derived by the chip (`MSG_KEY_REQ`),
   so no KMS policy, IAM role or support process can release the key. Intel TDX has no equivalent,
@@ -217,7 +267,7 @@ The honest state today. None of these are hidden; most are planned in the phases
 | Area | State |
 |---|---|
 | Hardware | Never run in a real SNP guest. configfs-tsm reading and the SNP/TDX report offsets come from the specs. The SNP derived-key ioctl behind `sealing-key` is pinned to the kernel UAPI header by tests but has not been run. Everything else can be developed on any Linux machine with the `insecure-dev` platform (see [`signer/README.md`](signer/README.md)). |
-| End-to-end | Never driven by a real validator client or charon cluster. Tested with vectors and curl only. |
+| End-to-end | Run once on a Kurtosis devnet: a 3-of-4 charon cluster with Lighthouse, Teku, Lodestar and Prysm each signing through its own sev-signer (insecure-dev) for about 300 slots. Charon accepted every partial signature, DV duties kept working with one node down, and slashing protection held across signer restarts. The devnet harness is not in the repo yet. `e2e/simnet.sh` is a lighter local smoke test on charon's beacon mock. |
 | Attestation verification | `verify-evidence` checks the binding, debug bit and measurement, but not the AMD chain (ARK → ASK → VCEK) or the report signature. |
 | Minimum TCB | `sealing-key` mixes a pinned minimum TCB into the SNP key. The verifier does not check it yet. |
 | Guest image | The 2024 Alpine image is unsafe for keys (see Findings). The mkosi image is not started. |
@@ -225,4 +275,7 @@ The honest state today. None of these are hidden; most are planned in the phases
 | Forks | Request types through Fulu. The new Gloas signing domains (PTC attestations, proposer preferences, payload envelopes) are not implemented. |
 | Exits | By design, not a gap: `VOLUNTARY_EXIT` is permitted for any authorised client and is not rate limited. In a DV each signer holds one share, so an exit needs a threshold of operators to sign. |
 | Operations | No metrics or request-parser fuzzing. |
+| Client auth | Pinned-cert mTLS on the signing listener, plus an optional public listener for health and evidence. A token as a second factor is planned (Phase 2). Lodestar, Prysm and Nimbus can't present a client certificate, and Lodestar can't send a token either. |
+| Key import | Keystores and password files are read from a directory. Encrypted import over the keymanager API, or DKG inside the guest, is planned (design choice 1). |
+| Pinned settings | `VALIDATOR_REGISTRATION` signs any fee recipient, and exits and deposits are startup flags. Pinned, operator-confirmed settings are planned (design choice 7). |
 | Review | Unaudited, with no external review yet. |
