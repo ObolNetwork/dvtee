@@ -133,6 +133,7 @@ fn app(data: &std::path::Path, policy: Policy) -> axum::Router {
         network: net,
         policy,
         tls_cert: None,
+        platform: sev_signer::platform::Platform::Tee,
     };
     router(Arc::new(state))
 }

@@ -1,6 +1,7 @@
 pub mod api;
 pub mod keystore;
 pub mod network;
+pub mod platform;
 pub mod signing;
 pub mod slashing;
 pub mod ssz;

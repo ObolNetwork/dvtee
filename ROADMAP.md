@@ -155,7 +155,8 @@ Cluster shape guidance that follows from this:
 * Publish expected launch measurements computed with `sev-snp-measure`.
 * Seal the data key with the SNP derived key using `MEASUREMENT | POLICY` and a pinned **minimum**
   TCB (snpguest `--tcb_version`), not the current TCB. That way firmware updates don't brick the disk
-  and downgrades below the minimum can't unseal it.
+  and downgrades below the minimum can't unseal it. The signer side is done (`sev-signer sealing-key`,
+  untested on hardware); the image still has to call it from the initrd.
 
 **Phase 2: attestation in the operator workflow**
 
@@ -215,10 +216,10 @@ The honest state today. None of these are hidden; most are planned in the phases
 
 | Area | State |
 |---|---|
-| Hardware | Never run in a real SNP guest. configfs-tsm reading and the SNP/TDX report offsets come from the specs. |
+| Hardware | Never run in a real SNP guest. configfs-tsm reading and the SNP/TDX report offsets come from the specs. The SNP derived-key ioctl behind `sealing-key` is pinned to the kernel UAPI header by tests but has not been run. Everything else can be developed on any Linux machine with the `insecure-dev` platform (see [`signer/README.md`](signer/README.md)). |
 | End-to-end | Never driven by a real validator client or charon cluster. Tested with vectors and curl only. |
 | Attestation verification | `verify-evidence` checks the binding, debug bit and measurement, but not the AMD chain (ARK → ASK → VCEK) or the report signature. |
-| Minimum TCB | Not enforced by the verifier or by sealing. |
+| Minimum TCB | `sealing-key` mixes a pinned minimum TCB into the SNP key. The verifier does not check it yet. |
 | Guest image | The 2024 Alpine image is unsafe for keys (see Findings). The mkosi image is not started. |
 | Anti-rollback | None. A restored disk snapshot rolls back slashing watermarks. |
 | Forks | Request types through Fulu. The new Gloas signing domains (PTC attestations, proposer preferences, payload envelopes) are not implemented. |
