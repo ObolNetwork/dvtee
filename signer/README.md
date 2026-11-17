@@ -61,6 +61,42 @@ sev-signer verify-evidence --evidence evidence.json --nonce $NONCE --expected-me
 
 It does **not** verify the AMD or Intel signature chain yet.
 
+## Sealing key
+
+`sev-signer sealing-key` writes a 32-byte key to stdout, for example to unlock the data disk with
+`cryptsetup open --key-file=-`. On SEV-SNP it asks the firmware for a key derived from the chip's
+VCEK, the launch measurement, the guest policy and a pinned minimum TCB
+(`--snp-min-tcb <raw TCB_VERSION hex>`), then derives a per-purpose key from it (`--purpose`,
+default `data-disk`). Only the same measured image on the same chip can derive it. A host move
+changes the chip, so the key is lost. That is why the design relies on charon `replace-operator` or a
+reshare for recovery.
+
+This path has not yet been run on an SNP guest. The kernel struct layouts are pinned by unit tests.
+
+## Development without SEV-SNP (`insecure-dev`)
+
+A build with `--features insecure-dev` adds `--platform insecure-dev`, a software stand-in for the
+TEE. It lets the rest of the system be built and tested on any Linux machine: e2e with a validator
+client and charon, the disk-unlock flow, and the verifier.
+
+```sh
+cargo build --features insecure-dev
+./target/debug/sev-signer serve --platform insecure-dev \
+  --insecure-dev-root-key ./dev-root.key \
+  --network hoodi --keystores-dir … --data-dir ./data
+```
+
+* **No security.** Keys are readable by the host and evidence is unsigned.
+* **Mainnet is refused.** The check uses the genesis validators root and fork version, so `custom:`
+  doesn't get around it.
+* **Evidence.** The provider is `insecure_dev`, in the SNP report layout. The measurement is the
+  SHA-384 of the running binary, and the debug policy bit is set. `verify-evidence` rejects it
+  unless you pass `--allow-insecure-dev`.
+* **Sealing key.** It is derived from the root key file, which is created if missing. Keep the file
+  outside the data dir. Delete it to simulate a host move.
+* **Not in release images.** Release builds (the `Dockerfile`) never enable the feature. A default
+  build rejects `--platform insecure-dev`.
+
 ## Slashing protection
 
 * **Storage.** One JSON watermark file per key in `<data-dir>/slashing/`, pinned to the network's
@@ -72,6 +108,7 @@ It does **not** verify the AMD or Intel signature chain yet.
 
 ```sh
 cargo test
+cargo test --features insecure-dev
 ```
 
 * **Test vectors.** `tests/vectors/` holds request bodies, signing roots and signatures, plus EIP-2335

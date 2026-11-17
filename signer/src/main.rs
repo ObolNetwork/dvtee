@@ -8,6 +8,7 @@ use sha2::{Digest, Sha256};
 
 use sev_signer::api::{self, AppState};
 use sev_signer::network::Network;
+use sev_signer::platform::{PlatformArgs, SnpKeyParams};
 use sev_signer::signing::Policy;
 use sev_signer::slashing::SlashingDb;
 use sev_signer::{keystore, tee, tls};
@@ -36,6 +37,24 @@ enum Cmd {
         #[arg(long, env = "SEV_SIGNER_NETWORK")]
         network: Network,
     },
+    /// Write a 32-byte sealing key for PURPOSE to stdout, e.g. for
+    /// `cryptsetup open --key-file=-`. On SEV-SNP it is derived from the
+    /// chip's VCEK, the launch measurement, the guest policy and a pinned
+    /// minimum TCB, so only the same measured image on the same chip gets it.
+    SealingKey {
+        #[arg(long, default_value = "data-disk")]
+        purpose: String,
+        /// Minimum TCB_VERSION mixed into the SNP key, as the raw 64-bit hex
+        /// value from an attestation report (its encoding varies by CPU
+        /// generation). Required for --platform tee.
+        #[arg(long, env = "SEV_SIGNER_SNP_MIN_TCB", value_parser = parse_hex_u64)]
+        snp_min_tcb: Option<u64>,
+        /// VMPL mixed into the SNP key; must be >= the guest's own VMPL.
+        #[arg(long, env = "SEV_SIGNER_SNP_VMPL", default_value_t = 0)]
+        snp_vmpl: u32,
+        #[command(flatten)]
+        platform: PlatformArgs,
+    },
     /// Offline check of evidence fetched from /api/v1/tee/attestation: the
     /// REPORT_DATA binding and debug policy. Does NOT verify the hardware
     /// signature; use `snpguest verify attestation` (SEV-SNP) or DCAP (TDX).
@@ -49,6 +68,9 @@ enum Cmd {
         /// Expected launch measurement, hex (from sev-snp-measure / MRTD).
         #[arg(long)]
         expected_measurement: Option<String>,
+        /// Accept `insecure_dev` evidence (development and e2e tests only).
+        #[arg(long)]
+        allow_insecure_dev: bool,
     },
 }
 
@@ -91,6 +113,8 @@ struct ServeArgs {
     slashing_protection_import: Option<PathBuf>,
     #[arg(long, env = "SEV_SIGNER_LOG_JSON")]
     log_json: bool,
+    #[command(flatten)]
+    platform: PlatformArgs,
 }
 
 fn main() -> anyhow::Result<()> {
@@ -105,12 +129,42 @@ fn main() -> anyhow::Result<()> {
             println!("{}", serde_json::to_string_pretty(&db.export()?)?);
             Ok(())
         }
+        Cmd::SealingKey {
+            purpose,
+            snp_min_tcb,
+            snp_vmpl,
+            platform,
+        } => {
+            use std::io::{IsTerminal, Write};
+            let platform = platform.build()?;
+            let snp = snp_min_tcb.map(|min_tcb| SnpKeyParams {
+                min_tcb,
+                vmpl: snp_vmpl,
+            });
+            let key = platform.sealing_key(&purpose, snp)?;
+            let mut out = std::io::stdout();
+            if out.is_terminal() {
+                bail!("refusing to write a raw key to a terminal; pipe it to cryptsetup");
+            }
+            out.write_all(key.as_ref())?;
+            Ok(())
+        }
         Cmd::VerifyEvidence {
             evidence,
             nonce,
             expected_measurement,
-        } => verify_evidence(&evidence, &nonce, expected_measurement.as_deref()),
+            allow_insecure_dev,
+        } => verify_evidence(
+            &evidence,
+            &nonce,
+            expected_measurement.as_deref(),
+            allow_insecure_dev,
+        ),
     }
+}
+
+fn parse_hex_u64(s: &str) -> Result<u64, String> {
+    u64::from_str_radix(s.trim_start_matches("0x"), 16).map_err(|e| e.to_string())
 }
 
 fn init_logging(json: bool) {
@@ -125,6 +179,15 @@ fn init_logging(json: bool) {
 }
 
 async fn serve(args: ServeArgs) -> anyhow::Result<()> {
+    let platform = args.platform.build()?;
+    if platform.is_insecure() {
+        refuse_mainnet(&args.network)?;
+        tracing::warn!(
+            "INSECURE-DEV PLATFORM: no TEE, keys are readable by the host, evidence is unsigned. \
+             Development and testing only."
+        );
+    }
+
     let keys = keystore::load_dir(&args.keystores_dir)?;
     if keys.is_empty() {
         bail!("no keystores found in {}", args.keystores_dir.display());
@@ -161,6 +224,7 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         tls_cert: tls
             .as_ref()
             .map(|m| (m.cert_der.clone(), m.cert_pem.clone())),
+        platform,
     });
     let app = api::router(state.clone()).layer(tower_http::trace::TraceLayer::new_for_http());
 
@@ -200,10 +264,26 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// The insecure platform must never hold mainnet keys. Checked by genesis
+/// validators root and fork version, so `custom:` cannot get around it.
+fn refuse_mainnet(network: &Network) -> anyhow::Result<()> {
+    let mainnet = Network::presets()
+        .into_iter()
+        .find(|n| n.name == "mainnet")
+        .expect("mainnet preset");
+    if network.genesis_validators_root == mainnet.genesis_validators_root
+        || network.genesis_fork_version == mainnet.genesis_fork_version
+    {
+        bail!("the insecure-dev platform refuses to run on mainnet");
+    }
+    Ok(())
+}
+
 fn verify_evidence(
     path: &std::path::Path,
     nonce: &str,
     expected: Option<&str>,
+    allow_insecure_dev: bool,
 ) -> anyhow::Result<()> {
     use rustls::pki_types::pem::PemObject;
 
@@ -268,13 +348,24 @@ fn verify_evidence(
         "tdx_guest" => tee::tdx_debug(&report),
         _ => None,
     };
-    match debug {
-        Some(false) => println!("debug policy:        OK (debug disabled)"),
-        Some(true) => {
-            println!("debug policy:        FAIL (guest is debuggable; host can read its memory)");
+    if provider == "insecure_dev" {
+        if allow_insecure_dev {
+            println!("platform:            INSECURE DEV (accepted by --allow-insecure-dev)");
+        } else {
+            println!("platform:            FAIL (insecure_dev evidence: no TEE, unsigned)");
             ok = false;
         }
-        None => println!("debug policy:        unknown"),
+    } else {
+        match debug {
+            Some(false) => println!("debug policy:        OK (debug disabled)"),
+            Some(true) => {
+                println!(
+                    "debug policy:        FAIL (guest is debuggable; host can read its memory)"
+                );
+                ok = false;
+            }
+            None => println!("debug policy:        unknown"),
+        }
     }
     if let Some(exp) = expected {
         if exp

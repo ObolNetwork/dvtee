@@ -40,3 +40,5 @@ jobs:
       - run: cargo fmt --check
       - run: cargo clippy --all-targets --locked -- -D warnings
       - run: cargo test --locked
+      - run: cargo clippy --all-targets --locked --features insecure-dev -- -D warnings
+      - run: cargo test --locked --features insecure-dev

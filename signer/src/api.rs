@@ -14,6 +14,7 @@ use serde_json::json;
 
 use crate::keystore::SecretKey;
 use crate::network::Network;
+use crate::platform::{Platform, PlatformError};
 use crate::signing::{self, Policy, PrepareError, SignRequest};
 use crate::slashing::{SlashingDb, SlashingError};
 use crate::tee;
@@ -25,6 +26,8 @@ pub struct AppState {
     pub policy: Policy,
     /// DER of the TLS certificate the API is served with, if any.
     pub tls_cert: Option<(Vec<u8>, String)>,
+    /// Source of attestation evidence.
+    pub platform: Platform,
 }
 
 pub fn router(state: Arc<AppState>) -> Router {
@@ -156,7 +159,8 @@ async fn attestation(
     let pubkeys: Vec<[u8; 48]> = st.keys.keys().copied().collect();
     let report_data = tee::report_data(&nonce, &cert_der, &pubkeys);
 
-    match tokio::task::spawn_blocking(move || tee::get_evidence(&report_data)).await {
+    let st2 = st.clone();
+    match tokio::task::spawn_blocking(move || st2.platform.evidence(&report_data)).await {
         Ok(Ok(ev)) => Json(json!({
             "provider": ev.provider,
             "report": format!("0x{}", hex::encode(&ev.report)),
@@ -166,7 +170,7 @@ async fn attestation(
             "pubkeys": pubkeys.iter().map(|k| format!("0x{}", hex::encode(k))).collect::<Vec<_>>(),
         }))
         .into_response(),
-        Ok(Err(e @ tee::TeeError::Unavailable)) => {
+        Ok(Err(e @ PlatformError::Tee(tee::TeeError::Unavailable))) => {
             error(StatusCode::NOT_IMPLEMENTED, e.to_string())
         }
         Ok(Err(e)) => error(StatusCode::SERVICE_UNAVAILABLE, e.to_string()),

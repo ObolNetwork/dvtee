@@ -126,8 +126,9 @@ pub struct Layout {
 
 pub fn layout(provider: &str) -> Option<Layout> {
     match provider {
-        // AMD SEV-SNP ATTESTATION_REPORT (SEV-SNP ABI spec, table 22).
-        "sev_guest" => Some(Layout {
+        // AMD SEV-SNP ATTESTATION_REPORT (SEV-SNP ABI spec, table 22). The
+        // insecure-dev platform emits unsigned reports in the same layout.
+        "sev_guest" | "insecure_dev" => Some(Layout {
             report_data: 0x50,
             measurement: (0x90, 48),
             measurement_name: "MEASUREMENT",
