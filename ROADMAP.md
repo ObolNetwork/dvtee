@@ -90,9 +90,10 @@ report offsets come from the specs; they have not been exercised on hardware.
 ## Where it fits: one diverse share in a cluster
 
 Cloud TEE signers, such as [lidofinance/tee-signer](https://github.com/lidofinance/tee-signer) on AWS
-Nitro, Azure SEV-SNP and GCP Confidential Space, seal keys with a cloud KMS policy. sev-signer takes
-the other branch: bare-metal SEV-SNP, with the chip as the sealing root. The two fail in different ways, which
-is the point of running both in one cluster.
+Nitro, Azure SEV-SNP and GCP Confidential Space, seal keys with a cloud KMS policy, so the cloud vendor stays in the trust base for the key itself.
+sev-signer is chip-specific instead: AMD SEV-SNP, with the chip as the sealing root and attestation
+checked against AMD's own certificate chain. It still runs on rented machines, but the provider can stop
+it, not unseal it. The two fail in different ways, which is the point of running both in one cluster.
 
 | | Cloud-KMS-sealed TEE signers (typical) | sev-signer (target design) |
 |---|---|---|
@@ -101,7 +102,8 @@ is the point of running both in one cluster.
 | Key creation | Often a dealer outside the TEE, then import | `charon dkg` inside the guest; the share never exists outside it |
 | Recovery | Re-import of shares kept outside the TEE, or a TEE-to-TEE handover | charon reshare or `replace-operator` |
 | Upgrade | New image key policy, then re-import or handover | Reshare into the new image's measurement |
-| Hosting | Cloud confidential VMs | Bare-metal SNP you control, with your own OVMF and UKI |
+| Hosting | AWS Nitro, Azure and GCP confidential VMs | AMD SEV-SNP guests that talk to the chip directly: AWS EC2 SNP instances, or SNP-capable VPS and bare-metal hosts |
+| Attestation trust | Cloud-signed tokens or cloud PKI | The raw SNP report, checked against AMD's chain |
 
 Cluster shape guidance that follows from this:
 
@@ -120,8 +122,8 @@ Cluster shape guidance that follows from this:
 
 1. **Generate shares inside the TEE.** Run `charon dkg` inside the guest so a key share never exists
    outside it. The PoC already showed this flow.
-2. **Recover by resharing, not by key export.** If a TEE node is lost (hardware failure, or a TCB change
-   that alters the sealing key), the cluster still signs at threshold, and `charon edit
+2. **Recover by resharing, not by key export.** If a TEE node is lost (hardware failure, a TCB change
+   that alters the sealing key, or a cloud stop/start that lands the VM on a different chip), the cluster still signs at threshold, and `charon edit
    replace-operator` / `recreate-private-keys` brings in a replacement. This makes strict sealing
    acceptable: no export path is needed, so there is none to attack.
 3. **A compromised node holds only one share.** Below-threshold compromise cannot produce slashable
@@ -174,7 +176,7 @@ Cluster shape guidance that follows from this:
   * use SNP SecureTSC (Genoa and later) for monotonic time.
 * **Defence in depth for the threshold.** Charon cluster consensus means only agreed duties reach
   the signer. The signer could also refuse slot or epoch far from wall clock.
-* Prometheus metrics, rate limits and fuzzing of the request parsers.
+* Prometheus metrics and fuzzing of the request parsers.
 
 **Phase 4: Intel and Arm**
 
@@ -184,21 +186,28 @@ Cluster shape guidance that follows from this:
   from re-running DKG/reshare into each new TD. The DV reshare path above makes the second option
   viable without new infrastructure.
 
-### Hosting reality check
+### Hosting
 
-* `kernel-hashes=on` with a custom OVMF requires a host you control: bare-metal SNP or a
-  provider that lets you launch your own SNP guests. Azure, GCP and AWS confidential VMs use their own
-  firmware or paravisor, which changes what the measurement covers and how the disk key is sealed.
-* SEV-SNP's threat model assumes the hypervisor is malicious, but physical attacks are out of scope.
-  Physical memory attacks (BadRAM, Battering RAM) work against a party with access to the DIMMs. A
-  datacenter-level adversary is therefore only partly covered. This matters for the product's
-  positioning.
-* **Open decision: bare metal first, or cloud confidential VMs too.** Bare metal you control gives the
-  full story above (own firmware, every boot component measured, the disk sealed to the measurement),
-  but fewer operators can run it. Cloud CVMs are what operators can get, but the cloud supplies the
-  firmware or paravisor and the disk key would come from a cloud vTPM or KMS. That is the cloud-KMS
-  branch in the table above, which other projects already cover. Not decided yet; bare metal is
-  what makes this a diverse share.
+**Decision: AMD SEV-SNP guests that reach the chip directly, on a cloud or a VPS.** The aim is to be
+incrementally better than cloud-KMS signers by taking the cloud out of key custody, not to be
+cloud-agnostic. In practice that means AWS EC2 SNP instances, or SNP-capable VPS and bare-metal hosts.
+
+* **Why chip-specific.** Only SNP gives the guest a sealing key derived by the chip (`MSG_KEY_REQ`),
+  so no KMS policy, IAM role or support process can release the key. Intel TDX has no equivalent,
+  so a TDX signer needs an external key broker, which brings the cloud back into key custody.
+* **Platforms that don't fit.** Azure confidential VMs run a paravisor between the guest and the
+  chip, and Nitro Enclaves are not SNP. Both put the cloud back in the attestation or sealing path.
+* **What the cloud still controls.** It supplies the launch firmware on EC2, so we pin and verify a
+  published measurement rather than our own OVMF build (`ovmf/` stays for VPS and bare-metal hosts).
+  It can stop the VM, roll back its disk, or attack the hardware physically. SEV-SNP's threat model
+  leaves physical memory attacks (BadRAM, Battering RAM) out of scope.
+* **Host moves lose the sealed share.** A chip-derived key is unique to one physical CPU, so a
+  stop/start or host migration lands the VM on a chip that can't unseal its data. In a DV cluster
+  that is a lost node: the cluster keeps signing at threshold, and `charon edit replace-operator` or a
+  reshare brings it back. Plan operations around it, and size clusters with n − t ≥ 2.
+* **To verify on real instances:** that EC2 SNP guests get `/dev/sev-guest` derived keys and the raw
+  report, and what the launch measurement covers there (firmware only, or kernel, initramfs and
+  command line too).
 
 ## Known gaps
 
@@ -213,6 +222,6 @@ The honest state today. None of these are hidden; most are planned in the phases
 | Guest image | The 2024 Alpine image is unsafe for keys (see Findings). The mkosi image is not started. |
 | Anti-rollback | None. A restored disk snapshot rolls back slashing watermarks. |
 | Forks | Request types through Fulu. The new Gloas signing domains (PTC attestations, proposer preferences, payload envelopes) are not implemented. |
-| Exits | `VOLUNTARY_EXIT` is allowed by default for any authorised client. A DV partial exit is harmless below threshold, but production should default to off or gate it. |
-| Operations | No metrics, rate limits or request-parser fuzzing. |
+| Exits | By design, not a gap: `VOLUNTARY_EXIT` is permitted for any authorised client and is not rate limited. In a DV each signer holds one share, so an exit needs a threshold of operators to sign. |
+| Operations | No metrics or request-parser fuzzing. |
 | Review | Unaudited, with no external review yet. |
