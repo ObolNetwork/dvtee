@@ -21,7 +21,12 @@ use rustls::{DigitallySignedStruct, DistinguishedName, ServerConfig, SignatureSc
 use sha2::{Digest, Sha256};
 
 pub struct Material {
+    /// Signing listener: requires a pinned client certificate when known
+    /// clients are configured.
     pub config: Arc<ServerConfig>,
+    /// Public listener (health, attestation): same certificate, no client
+    /// authentication.
+    pub public_config: Arc<ServerConfig>,
     pub cert_der: Vec<u8>,
     pub cert_pem: String,
 }
@@ -60,11 +65,18 @@ pub fn load_or_generate(
         Some(path) => builder.with_client_cert_verifier(Arc::new(PinnedClients::load(path)?)),
         None => builder.with_no_client_auth(),
     };
-    let mut config = builder.with_single_cert(vec![cert.clone()], key)?;
+    let mut config = builder.with_single_cert(vec![cert.clone()], key.clone_key())?;
     config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
+
+    let mut public_config = ServerConfig::builder_with_provider(provider())
+        .with_safe_default_protocol_versions()?
+        .with_no_client_auth()
+        .with_single_cert(vec![cert.clone()], key)?;
+    public_config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
 
     Ok(Material {
         config: Arc::new(config),
+        public_config: Arc::new(public_config),
         cert_der: cert.to_vec(),
         cert_pem,
     })

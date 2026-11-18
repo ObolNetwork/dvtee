@@ -104,6 +104,11 @@ struct ServeArgs {
     /// this file (Web3Signer knownClients format).
     #[arg(long, env = "SEV_SIGNER_TLS_KNOWN_CLIENTS")]
     tls_known_clients: Option<PathBuf>,
+    /// Second TLS listener serving only /upcheck, /healthcheck and
+    /// /api/v1/tee/attestation, without client certificates, so peers and
+    /// monitoring can fetch evidence while signing stays behind mTLS.
+    #[arg(long, env = "SEV_SIGNER_PUBLIC_LISTEN")]
+    public_listen: Option<SocketAddr>,
     #[arg(long, env = "SEV_SIGNER_ALLOW_VOLUNTARY_EXITS", default_value_t = true, action = clap::ArgAction::Set)]
     allow_voluntary_exits: bool,
     #[arg(long, env = "SEV_SIGNER_ALLOW_DEPOSITS", default_value_t = false, action = clap::ArgAction::Set)]
@@ -174,7 +179,8 @@ fn init_logging(json: bool) {
     if json {
         fmt.json().init();
     } else {
-        fmt.init();
+        use std::io::IsTerminal;
+        fmt.with_ansi(std::io::stdout().is_terminal()).init();
     }
 }
 
@@ -240,12 +246,32 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     let handle = axum_server::Handle::new();
     let h = handle.clone();
     tokio::spawn(async move {
-        let _ = tokio::signal::ctrl_c().await;
+        shutdown_signal().await;
+        tracing::info!("shutting down");
         h.graceful_shutdown(Some(std::time::Duration::from_secs(5)));
     });
 
+    if args.public_listen.is_some() && tls.is_none() {
+        bail!("--public-listen requires TLS (it serves attestation evidence bound to the TLS key)");
+    }
     match tls {
         Some(m) => {
+            if let Some(addr) = args.public_listen {
+                let public = api::public_router(state.clone())
+                    .layer(tower_http::trace::TraceLayer::new_for_http());
+                let cfg = axum_server::tls_rustls::RustlsConfig::from_config(m.public_config);
+                let h = handle.clone();
+                tracing::info!(listen = %addr, "public listener (health, attestation)");
+                tokio::spawn(async move {
+                    if let Err(e) = axum_server::bind_rustls(addr, cfg)
+                        .handle(h)
+                        .serve(public.into_make_service())
+                        .await
+                    {
+                        tracing::error!(error = %e, "public listener failed");
+                    }
+                });
+            }
             axum_server::bind_rustls(
                 args.listen,
                 axum_server::tls_rustls::RustlsConfig::from_config(m.config),
@@ -262,6 +288,26 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         }
     }
     Ok(())
+}
+
+/// SIGINT or SIGTERM. Containers send SIGTERM, and as PID 1 the signer gets
+/// no default handler for it.
+async fn shutdown_signal() {
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{SignalKind, signal};
+        match signal(SignalKind::terminate()) {
+            Ok(mut term) => {
+                tokio::select! {
+                    _ = tokio::signal::ctrl_c() => {}
+                    _ = term.recv() => {}
+                }
+                return;
+            }
+            Err(e) => tracing::warn!(error = %e, "cannot listen for SIGTERM"),
+        }
+    }
+    let _ = tokio::signal::ctrl_c().await;
 }
 
 /// The insecure platform must never hold mainnet keys. Checked by genesis

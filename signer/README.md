@@ -20,6 +20,9 @@ cargo build --release
 * **TLS.** On first start the signer generates a TLS key and a self-signed certificate in
   `<data-dir>/tls/`. Configure the validator client to trust `cert.pem`. In a TEE deployment, obtain
   the certificate from attestation evidence rather than from the disk.
+* **Public listener.** `--public-listen <addr>` adds a second TLS port with the same certificate and
+  no client authentication. It serves only `/upcheck`, `/healthcheck` and `/api/v1/tee/attestation`,
+  so peers and monitoring can fetch evidence while signing stays behind mTLS.
 * **Development without TLS.** `--insecure-http` serves plain HTTP. It disables attestation.
 * **Configuration from the environment.** Every flag also reads a `SEV_SIGNER_*` environment variable
   (see `--help`).
@@ -41,7 +44,30 @@ Supported request types:
 * `VOLUNTARY_EXIT` (EIP-7044), `VALIDATOR_REGISTRATION`, `DEPOSIT` (off by default)
 
 The signer always recomputes the signing root itself. A `signingRoot` sent by the client is only
-compared against the computed one.
+compared against the computed one. `AGGREGATE_AND_PROOF` (v1) accepts both the phase0 and the
+Electra attestation, chosen by the presence of `committee_bits`, because Lighthouse and Teku still
+send the v1 type after Electra.
+
+Rejected requests (4xx) are logged at `warn` with the reason. Request bodies are not logged.
+
+## Validator clients
+
+Tested on a Kurtosis devnet (Electra and Fulu at genesis, 32-slot epochs) with each client signing
+through its own sev-signer as one operator of a 3-of-4 charon cluster:
+
+| Client | Version | Works | Pinned server cert | mTLS client cert | Credentials in URL (`https://x:token@…`) |
+|---|---|---|---|---|---|
+| Lighthouse | v8.3.3 | yes | `root_certificate_path` | `client_identity_path` + `_password` (PKCS#12) | Basic, sent on every request |
+| Teku | 26.10.3 | yes | `--validators-external-signer-truststore` (PKCS#12) | `--validators-external-signer-keystore` | Basic, HTTPS only, sent after a `401` with `WWW-Authenticate: Basic` |
+| Lodestar | v1.50.1 | yes | `NODE_EXTRA_CA_CERTS` | none | rejected at startup |
+| Prysm | v7.3.1 | yes | `SSL_CERT_FILE` | none | Basic, sent on every request |
+| Nimbus | v26.10.2 | no | none: ignores IP SANs, and has no CA option | none | Basic, sent on every request |
+
+Each client signed attestations, blocks, RANDAO reveals, aggregation selection proofs and all sync
+committee kinds; Lighthouse also signed builder registrations. Charon verified every partial
+signature it received. Lodestar and Prysm aggregates (`AGGREGATE_AND_PROOF_V2`) were signed in that
+run; Lighthouse and Teku aggregates (v1 type with an Electra body) were rejected then and are fixed
+since, covered by a test vector.
 
 ## Verifying a signer
 

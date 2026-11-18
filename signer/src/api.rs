@@ -44,6 +44,20 @@ pub fn router(state: Arc<AppState>) -> Router {
         .with_state(state)
 }
 
+/// Health and attestation only, for a listener without client
+/// authentication: evidence is meant to be fetched by anyone (e.g. charon
+/// peers), and it reveals nothing beyond the public keys and certificate.
+pub fn public_router(state: Arc<AppState>) -> Router {
+    Router::new()
+        .route("/upcheck", get(|| async { "OK" }))
+        .route(
+            "/healthcheck",
+            get(|| async { Json(json!({"status": "UP"})) }),
+        )
+        .route("/api/v1/tee/attestation", get(attestation))
+        .with_state(state)
+}
+
 fn error(status: StatusCode, msg: impl Into<String>) -> Response {
     (status, Json(json!({"error": msg.into()}))).into_response()
 }
@@ -83,17 +97,22 @@ async fn sign(
     let req: SignRequest = match serde_json::from_slice(&body) {
         Ok(r) => r,
         Err(e) => {
-            return error(
-                StatusCode::BAD_REQUEST,
-                format!("invalid request body: {e}"),
-            );
+            let msg = format!("invalid request body: {e}");
+            tracing::warn!(pubkey = %identifier, error = %msg, "rejected sign request");
+            return error(StatusCode::BAD_REQUEST, msg);
         }
     };
 
     let prepared = match signing::prepare(&req, &st.network, &st.policy) {
         Ok(p) => p,
-        Err(e @ PrepareError::Forbidden(_)) => return error(StatusCode::FORBIDDEN, e.to_string()),
-        Err(e) => return error(StatusCode::BAD_REQUEST, e.to_string()),
+        Err(e) => {
+            let status = match e {
+                PrepareError::Forbidden(_) => StatusCode::FORBIDDEN,
+                _ => StatusCode::BAD_REQUEST,
+            };
+            tracing::warn!(pubkey = %identifier, %status, error = %e, "rejected sign request");
+            return error(status, e.to_string());
+        }
     };
 
     // Slashing check, durable record and BLS signing are blocking work.

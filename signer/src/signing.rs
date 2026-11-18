@@ -549,13 +549,19 @@ pub fn prepare(
             aggregate_and_proof,
         } => {
             check_net(fork_info)?;
+            // Lighthouse and Teku keep sending the v1 type after Electra, with
+            // an Electra attestation inside. The v1 body carries no fork
+            // version, so `committee_bits` (Electra and later only) picks the
+            // schema. Either way the root is computed here and the domain is
+            // the aggregate domain, so this cannot yield a slashable signature.
+            let electra = aggregate_and_proof.aggregate.committee_bits.is_some();
             let domain = fork_info.domain(
                 DOMAIN_AGGREGATE_AND_PROOF,
                 epoch_at_slot(aggregate_and_proof.aggregate.data.slot.0),
             );
             (
                 "AGGREGATE_AND_PROOF",
-                compute_signing_root(&aggregate_and_proof.root(false)?, &domain),
+                compute_signing_root(&aggregate_and_proof.root(electra)?, &domain),
                 None,
             )
         }
