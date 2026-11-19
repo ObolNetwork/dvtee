@@ -74,20 +74,18 @@ Each sev-signer reads the devnet's fork schedule from the genesis `config.yaml`.
 
 ## Gloas
 
-Run with `GLOAS_EPOCH=<n>` (for example `2`, so the DV runs a few epochs in Fulu first). The pinned
-images predate Gloas, so every component on the signing path needs a Gloas-capable build. TODO: fill
-in the versions once they are tested.
+Run with `GLOAS_EPOCH=<n>` (for example `2`, so the DV runs a few epochs in Fulu first). The default
+images already support Gloas; tested 2026-11-19 with `GLOAS_EPOCH=2` for 160 slots:
 
-| Component | Variable | Image (TODO) |
+| Component | Variable | Image |
 |---|---|---|
-| Execution client (geth, Amsterdam) | `EL_IMAGE` | TODO |
-| Lighthouse BN and Kurtosis VC | `CL_IMAGE` | TODO |
-| ethereum-package with `gloas_fork_epoch` support | `ETH_PKG` | TODO (check 6.1.0-obol.6) |
-| charon, Gloas duties | `CHARON` | TODO |
-| Lighthouse VC (pod0) | `LIGHTHOUSE` | TODO |
-| Teku VC (pod1) | `TEKU` | TODO |
-| Lodestar VC (pod2) | `LODESTAR` | TODO |
-| Prysm VC (pod3) | `PRYSM` | TODO |
+| Execution client | `EL_IMAGE` | `ethereum/client-go:v1.17.10` (default) |
+| Lighthouse BN and Kurtosis VC | `CL_IMAGE` | `sigp/lighthouse:v8.3.3` (default) |
+| ethereum-package | `ETH_PKG` | `ObolNetwork/ethereum-package@6.1.0-obol.6` (default) |
+| charon | `CHARON` | main from `e995d274` (Gloas duties, #4789) on |
+| VCs | `LIGHTHOUSE`, `TEKU`, `LODESTAR`, `PRYSM` | the defaults: Lighthouse v8.3.3, Teku 26.10.3, Lodestar v1.50.1, Prysm v7.3.1 |
+
+All four VCs signed every Gloas kind they use, with no rejections.
 
 What to look for after the fork:
 - The new kinds should appear in `summary`:
@@ -98,6 +96,10 @@ What to look for after the fork:
 - Any `rejected` line means a request shape or version that the signer and that VC disagree on.
 - A `refused` (412) envelope means the VC asked for an envelope for a block this signer did not sign.
 - A VC that sends `EXECUTION_PAYLOAD_BID` gets 403 by design.
+- `summary` adds a Gloas section: how many DV self-built payloads were revealed (`FULL`) and which
+  were not, plus charon's `envelope never revealed` warnings. An `EMPTY` payload with signed envelopes
+  on every signer points past the signer. In the 2026-11-19 run, charon submitted the envelope before
+  the beacon node had imported the block, got `BlockRootUnknown`, and didn't retry.
 
 ## What it reports
 

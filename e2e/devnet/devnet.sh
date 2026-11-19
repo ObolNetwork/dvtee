@@ -323,8 +323,39 @@ summary() {
       if [[ ",$4," == *",$p,"* ]]; then dv=$((dv + 1)); else other=$((other + 1)); fi
     done
     echo "DV blocks: $dv, other blocks: $other, empty slots:${empty:- none}"' _ $((PODS_SLOT + 1)) "$head" "$BN" "$idx"
+  gloas_payloads "$head" "$idx"
   echo "== DV balances (gwei)"
   bn "/eth/v1/beacon/states/head/validators?id=$idx" | jq -r '.data[] | "\(.index) \(.balance) \(.status)"'
+}
+
+# After Gloas: whether each DV proposal's self-built payload was revealed. A payload counts as FULL when a
+# later block's bid builds on its block_hash; the newest block is still pending. Also counts charon's
+# "envelope never revealed" warnings.
+gloas_payloads() {
+  local head=$1 idx=$2 ge from
+  ge=$(cfg GLOAS_FORK_EPOCH)
+  [[ -n $ge && $ge != 18446744073709551615 ]] || return 0
+  from=$((ge * 32 > PODS_SLOT ? ge * 32 : PODS_SLOT + 1))
+  ((from < head)) || return 0
+  echo "== Gloas: DV self-built payloads from slot $from (FULL = a later bid builds on it)"
+  docker exec "$P-relay" bash -c '
+    declare -A hash; parents=" "; dv=()
+    for ((s = $1; s <= $2; s++)); do
+      b=$(curl -sf "$3/eth/v2/beacon/blocks/$s") || continue
+      read -r p h ph < <(jq -r "[.data.message.proposer_index, (.data.message.body.signed_execution_payload_bid.message | .block_hash, .parent_block_hash)] | @tsv" <<<"$b")
+      parents+="$ph "
+      if [[ ",$4," == *",$p,"* ]]; then hash[$s]=$h; dv+=("$s"); fi
+    done
+    full=0; empty=""
+    for s in "${dv[@]}"; do
+      if [[ $parents == *" ${hash[$s]} "* ]]; then full=$((full + 1));
+      elif ((s < $2)); then empty+=" $s"; fi
+    done
+    echo "DV proposals: ${#dv[@]}, payload FULL: $full, EMPTY:${empty:- none}"' _ "$from" "$head" "$BN" "$idx"
+  local i
+  for i in 0 1 2 3; do
+    echo "node$i envelope_never_revealed=$(docker logs "$P-charon$i" 2>&1 | grep -c 'execution payload envelope never revealed')"
+  done
 }
 
 # Sign request helpers against signer0, from inside its pod, with node0's pinned client cert.
