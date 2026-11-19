@@ -12,8 +12,8 @@ signers can compare designs. Nothing here has run on SEV-SNP hardware or been au
 
 * **The signer (`signer/`, binary `sev-signer`) is a small Rust Web3Signer-compatible eth2 signer**
   with:
-  * recomputed signing roots, cross-checked against go-eth2-client and herumi BLS for all 13 request
-    types;
+  * recomputed signing roots for every request type through Gloas, cross-checked against
+    go-eth2-client with herumi BLS, the consensus spec tests and Web3Signer's own examples;
   * durable EIP-3076 slashing protection;
   * TLS terminated inside the guest, plus optional pinned-cert mTLS;
   * a vendor-neutral attestation endpoint (configfs-tsm) that binds the evidence to the TLS key and the
@@ -59,9 +59,15 @@ reviewed at the same time and are superseded by `signer/`.
 
 * **Web3Signer eth2 API.** `POST /api/v1/eth2/sign/{pubkey}`, `GET /api/v1/eth2/publicKeys`,
   `/upcheck` and `/healthcheck`, with text or JSON responses selected by `Accept`.
-* **All 13 request types through Fulu.** ATTESTATION, BLOCK_V2 (header), RANDAO_REVEAL,
-  AGGREGATION_SLOT, AGGREGATE_AND_PROOF (v1 and V2/Electra), the three sync committee types,
-  VOLUNTARY_EXIT (EIP-7044), VALIDATOR_REGISTRATION and DEPOSIT.
+* **Request types through Gloas.** ATTESTATION, BLOCK_V2 (header), RANDAO_REVEAL,
+  AGGREGATION_SLOT, AGGREGATE_AND_PROOF (v1 and V2, phase0 to Gloas), the three sync committee types,
+  VOLUNTARY_EXIT (EIP-7044), VALIDATOR_REGISTRATION and DEPOSIT, plus the Gloas types
+  PAYLOAD_ATTESTATION_MESSAGE, PROPOSER_PREFERENCES, EXECUTION_PAYLOAD_ENVELOPE (self-built blocks
+  only, and only for a block this signer signed) and BUILDER_REQUEST_AUTH. EXECUTION_PAYLOAD_BID is
+  refused: it is a builder's message.
+* **Fork schedule.** Presets carry each fork's version and epoch, and `--network-config` loads a
+  standard consensus `config.yaml` (devnets). A request's fork version and schema must match the fork
+  at its slot.
 * **Never signs a client-provided root.** Each root is recomputed from the typed object, and the domain
   is chosen by request type. A mismatching `signingRoot` is rejected. A signer that blind-signs roots is
   a universal signing oracle, which would defeat the point of putting the key in a TEE.
@@ -81,8 +87,9 @@ reviewed at the same time and are superseded by `signer/`.
   SEV-SNP, TDX and CCA. REPORT_DATA binds the nonce, the TLS certificate and the BLS key set.
 * **Offline evidence check.** `sev-signer verify-evidence` checks the binding, the debug policy bit and
   the expected measurement.
-* **Footprint.** About 2,500 lines of Rust including unit tests. There is no consensus types library; SSZ merkleization is
-  hand-rolled in about 100 lines and covered by the vectors.
+* **Footprint.** No consensus types library. SSZ merkleization, including the progressive types Gloas
+  uses (EIP-7916, EIP-7495), is hand-rolled and checked against the consensus spec tests (v1.7.0-beta.4
+  `ssz_static`) and the ssz-specs progressive vectors.
 
 **Not yet verified:** it has not run inside a real SNP guest. The configfs-tsm path and the SNP and TDX
 report offsets come from the specs; they have not been exercised on hardware.
@@ -272,7 +279,7 @@ The honest state today. None of these are hidden; most are planned in the phases
 | Minimum TCB | `sealing-key` mixes a pinned minimum TCB into the SNP key. The verifier does not check it yet. |
 | Guest image | The 2024 Alpine image is unsafe for keys (see Findings). The mkosi image is not started. |
 | Anti-rollback | None. A restored disk snapshot rolls back slashing watermarks. |
-| Forks | Request types through Fulu. The new Gloas signing domains (PTC attestations, proposer preferences, payload envelopes) are not implemented. |
+| Forks | Gloas types implemented against consensus-specs v1.7.0-beta.4 and remote-signing-api v1.4.0, and checked against the spec tests, go-eth2-client and Web3Signer's examples, but not yet run against validator clients on a Gloas devnet. The domains of the four new types have only go-eth2-client as an outside check. Gloas is still changing upstream, so each spec release needs re-checking. |
 | Exits | By design, not a gap: `VOLUNTARY_EXIT` is permitted for any authorised client and is not rate limited. In a DV each signer holds one share, so an exit needs a threshold of operators to sign. |
 | Operations | No metrics or request-parser fuzzing. |
 | Client auth | Pinned-cert mTLS on the signing listener, plus an optional public listener for health and evidence. A token as a second factor is planned (Phase 2). Lodestar, Prysm and Nimbus can't present a client certificate, and Lodestar can't send a token either. |

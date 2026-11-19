@@ -42,3 +42,18 @@ jobs:
       - run: cargo test --locked
       - run: cargo clippy --all-targets --locked --features insecure-dev -- -D warnings
       - run: cargo test --locked --features insecure-dev
+      # Consensus spec tests and ssz-specs vectors: the pinned archives are
+      # streamed once (~1 GB, only ~1 MB extracted) and cached by script hash.
+      - name: Cache spec tests
+        id: spec-tests
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: signer/spec-tests
+          key: spec-tests-${{ hashFiles('signer/scripts/fetch-spec-tests.sh') }}
+      - name: Fetch spec tests
+        if: steps.spec-tests.outputs.cache-hit != 'true'
+        run: scripts/fetch-spec-tests.sh
+      - name: Spec tests
+        run: cargo test --locked --test spec_tests -- --nocapture
+        env:
+          SPEC_TESTS_DIR: ${{ github.workspace }}/signer/spec-tests

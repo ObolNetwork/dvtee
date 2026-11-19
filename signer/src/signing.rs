@@ -9,7 +9,7 @@
 use serde::Deserialize;
 use serde::de::{self, Deserializer};
 
-use crate::network::{Network, SLOTS_PER_EPOCH};
+use crate::network::{ForkName, Network, SLOTS_PER_EPOCH};
 use crate::ssz::{self, Root};
 
 const DOMAIN_BEACON_PROPOSER: [u8; 4] = [0x00, 0, 0, 0];
@@ -23,6 +23,16 @@ const DOMAIN_SYNC_COMMITTEE: [u8; 4] = [0x07, 0, 0, 0];
 const DOMAIN_SYNC_COMMITTEE_SELECTION_PROOF: [u8; 4] = [0x08, 0, 0, 0];
 const DOMAIN_CONTRIBUTION_AND_PROOF: [u8; 4] = [0x09, 0, 0, 0];
 const DOMAIN_APPLICATION_BUILDER: [u8; 4] = [0x00, 0, 0, 0x01];
+const DOMAIN_BEACON_BUILDER: [u8; 4] = [0x0B, 0, 0, 0];
+const DOMAIN_PTC_ATTESTER: [u8; 4] = [0x0C, 0, 0, 0];
+const DOMAIN_PROPOSER_PREFERENCES: [u8; 4] = [0x0D, 0, 0, 0];
+/// builder-specs Gloas: out-of-protocol builder API authentication.
+const DOMAIN_BUILDER_REQUEST_AUTH: [u8; 4] = [0x0B, 0, 0, 0x01];
+
+pub const BUILDER_INDEX_SELF_BUILD: u64 = u64::MAX;
+/// builder-specs Gloas `MAX_BUILDER_AUTH_DATA_SIZE`.
+const MAX_BUILDER_AUTH_DATA_SIZE: usize = 4096;
+const MAX_EXTRA_DATA_BYTES: usize = 32;
 
 // Mainnet preset limits.
 const MAX_VALIDATORS_PER_COMMITTEE: usize = 2048;
@@ -82,8 +92,43 @@ impl<'de> Deserialize<'de> for HexBytes {
     }
 }
 
+/// `uint256` given as a decimal string (beacon API style), kept as its SSZ
+/// (little-endian) encoding.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct U256Le(pub [u8; 32]);
+
+impl<'de> Deserialize<'de> for U256Le {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        let s = String::deserialize(d)?;
+        if s.is_empty() || !s.bytes().all(|b| b.is_ascii_digit()) {
+            return Err(de::Error::custom(format!(
+                "uint256 must be a decimal string, got {s:?}"
+            )));
+        }
+        // Little-endian 64-bit limbs; value = value * 10 + digit.
+        let mut limbs = [0u64; 4];
+        for digit in s.bytes().map(|b| u64::from(b - b'0')) {
+            let mut carry = digit as u128;
+            for limb in &mut limbs {
+                let v = (*limb as u128) * 10 + carry;
+                *limb = v as u64;
+                carry = v >> 64;
+            }
+            if carry != 0 {
+                return Err(de::Error::custom("uint256 overflow"));
+            }
+        }
+        let mut out = [0u8; 32];
+        for (i, limb) in limbs.iter().enumerate() {
+            out[i * 8..(i + 1) * 8].copy_from_slice(&limb.to_le_bytes());
+        }
+        Ok(U256Le(out))
+    }
+}
+
 // ---------------------------------------------------------------------------
-// Request types (https://consensys.github.io/web3signer/web3signer-eth2.html).
+// Request types (https://consensys.github.io/web3signer/web3signer-eth2.html,
+// Gloas types from ethereum/remote-signing-api v1.4.0).
 
 #[derive(Deserialize, Debug)]
 pub struct SignRequest {
@@ -152,6 +197,38 @@ pub enum SignBody {
     },
     #[serde(rename = "DEPOSIT")]
     Deposit { deposit: Deposit },
+    #[serde(rename = "PAYLOAD_ATTESTATION_MESSAGE")]
+    PayloadAttestationMessage {
+        fork_info: ForkInfo,
+        payload_attestation_message: Versioned<PayloadAttestationData>,
+    },
+    #[serde(rename = "PROPOSER_PREFERENCES")]
+    ProposerPreferences {
+        fork_info: ForkInfo,
+        proposer_preferences: Versioned<ProposerPreferences>,
+    },
+    #[serde(rename = "EXECUTION_PAYLOAD_ENVELOPE")]
+    ExecutionPayloadEnvelope {
+        fork_info: ForkInfo,
+        execution_payload_envelope: Box<Versioned<ExecutionPayloadEnvelope>>,
+    },
+    /// Builder bids are signed with builder keys, never validator keys; the
+    /// body is not even parsed.
+    #[serde(rename = "EXECUTION_PAYLOAD_BID")]
+    ExecutionPayloadBid {},
+    /// No `fork_info`: the domain uses the genesis fork version and a zero
+    /// genesis validators root, like validator registrations.
+    #[serde(rename = "BUILDER_REQUEST_AUTH")]
+    BuilderRequestAuth {
+        builder_request_auth: Versioned<BuilderRequestAuth>,
+    },
+}
+
+/// `{"version": "GLOAS", "data": ...}` wrapper of the v1.4.0 request types.
+#[derive(Deserialize, Debug)]
+pub struct Versioned<T> {
+    pub version: String,
+    pub data: T,
 }
 
 #[derive(Deserialize, Debug)]
@@ -284,6 +361,119 @@ pub struct Deposit {
     pub genesis_fork_version: Bytes<4>,
 }
 
+// Gloas (consensus-specs v1.7.0-beta.4).
+
+#[derive(Deserialize, Debug)]
+pub struct PayloadAttestationData {
+    pub beacon_block_root: Bytes<32>,
+    pub slot: U64,
+    pub payload_present: bool,
+    pub blob_data_available: bool,
+}
+
+/// p2p-interface.md `ProposerPreferences`.
+#[derive(Deserialize, Debug)]
+pub struct ProposerPreferences {
+    pub dependent_root: Bytes<32>,
+    pub proposal_slot: U64,
+    pub validator_index: U64,
+    pub fee_recipient: Bytes<20>,
+    pub target_gas_limit: U64,
+}
+
+/// builder-specs Gloas `BuilderRequestAuth`.
+#[derive(Deserialize, Debug)]
+pub struct BuilderRequestAuth {
+    pub data: HexBytes,
+    pub slot: U64,
+}
+
+#[derive(Deserialize, Debug)]
+pub struct Withdrawal {
+    pub index: U64,
+    pub validator_index: U64,
+    pub address: Bytes<20>,
+    pub amount: U64,
+}
+
+#[derive(Deserialize, Debug)]
+pub struct ExecutionPayload {
+    pub parent_hash: Bytes<32>,
+    pub fee_recipient: Bytes<20>,
+    pub state_root: Bytes<32>,
+    pub receipts_root: Bytes<32>,
+    pub logs_bloom: Bytes<256>,
+    pub prev_randao: Bytes<32>,
+    pub block_number: U64,
+    pub gas_limit: U64,
+    pub gas_used: U64,
+    pub timestamp: U64,
+    pub extra_data: HexBytes,
+    pub base_fee_per_gas: U256Le,
+    pub block_hash: Bytes<32>,
+    pub transactions: Vec<HexBytes>,
+    pub withdrawals: Vec<Withdrawal>,
+    pub blob_gas_used: U64,
+    pub excess_blob_gas: U64,
+    pub block_access_list: HexBytes,
+    pub slot_number: U64,
+}
+
+#[derive(Deserialize, Debug)]
+pub struct DepositRequest {
+    pub pubkey: Bytes<48>,
+    pub withdrawal_credentials: Bytes<32>,
+    pub amount: U64,
+    pub signature: Bytes<96>,
+    pub index: U64,
+}
+
+#[derive(Deserialize, Debug)]
+pub struct WithdrawalRequest {
+    pub source_address: Bytes<20>,
+    pub validator_pubkey: Bytes<48>,
+    pub amount: U64,
+}
+
+#[derive(Deserialize, Debug)]
+pub struct ConsolidationRequest {
+    pub source_address: Bytes<20>,
+    pub source_pubkey: Bytes<48>,
+    pub target_pubkey: Bytes<48>,
+}
+
+#[derive(Deserialize, Debug)]
+pub struct BuilderDepositRequest {
+    pub pubkey: Bytes<48>,
+    pub withdrawal_credentials: Bytes<32>,
+    pub amount: U64,
+    pub signature: Bytes<96>,
+}
+
+#[derive(Deserialize, Debug)]
+pub struct BuilderExitRequest {
+    pub source_address: Bytes<20>,
+    pub pubkey: Bytes<48>,
+}
+
+#[derive(Deserialize, Debug)]
+pub struct ExecutionRequests {
+    pub deposits: Vec<DepositRequest>,
+    pub withdrawals: Vec<WithdrawalRequest>,
+    pub consolidations: Vec<ConsolidationRequest>,
+    pub builder_deposits: Vec<BuilderDepositRequest>,
+    pub builder_exits: Vec<BuilderExitRequest>,
+}
+
+#[derive(Deserialize, Debug)]
+pub struct ExecutionPayloadEnvelope {
+    pub payload: ExecutionPayload,
+    pub execution_requests: ExecutionRequests,
+    pub builder_index: U64,
+    pub beacon_block_root: Bytes<32>,
+    pub parent_beacon_block_root: Bytes<32>,
+}
+
 // ---------------------------------------------------------------------------
 // Hash tree roots.
 
@@ -306,7 +496,8 @@ impl AttestationData {
 }
 
 impl BeaconBlockHeader {
-    fn root(&self) -> Root {
+    /// Equals the root of the full `BeaconBlock` it summarizes.
+    pub fn root(&self) -> Root {
         ssz::container(&[
             ssz::uint64(self.slot.0),
             ssz::uint64(self.proposer_index.0),
@@ -317,41 +508,232 @@ impl BeaconBlockHeader {
     }
 }
 
+/// The three SSZ shapes `Attestation` has had.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AttestationSchema {
+    /// Phase0 to Deneb: `Bitlist[MAX_VALIDATORS_PER_COMMITTEE]`, no
+    /// `committee_bits`.
+    Phase0,
+    /// Electra and Fulu (EIP-7549): adds `committee_bits`.
+    Electra,
+    /// Gloas (EIP-7688): `ProgressiveContainer` with a `ProgressiveBitList`.
+    Gloas,
+}
+
+impl AttestationSchema {
+    pub fn for_fork(fork: ForkName) -> Self {
+        if fork >= ForkName::Gloas {
+            AttestationSchema::Gloas
+        } else if fork >= ForkName::Electra {
+            AttestationSchema::Electra
+        } else {
+            AttestationSchema::Phase0
+        }
+    }
+}
+
 impl Attestation {
-    fn root(&self, electra: bool) -> Result<Root, String> {
-        if electra {
-            let committee_bits = self
-                .committee_bits
+    pub fn root(&self, schema: AttestationSchema) -> Result<Root, String> {
+        let committee_bits = || {
+            self.committee_bits
                 .as_ref()
-                .ok_or("electra attestation is missing committee_bits")?;
-            Ok(ssz::container(&[
+                .ok_or_else(|| format!("{schema:?} attestation is missing committee_bits"))
+        };
+        match schema {
+            AttestationSchema::Phase0 => {
+                if self.committee_bits.is_some() {
+                    return Err("pre-electra attestation must not have committee_bits".into());
+                }
+                Ok(ssz::container(&[
+                    ssz::bitlist(&self.aggregation_bits.0, MAX_VALIDATORS_PER_COMMITTEE)?,
+                    self.data.root(),
+                    ssz::bytes_vector(&self.signature.0),
+                ]))
+            }
+            AttestationSchema::Electra => Ok(ssz::container(&[
                 ssz::bitlist(
                     &self.aggregation_bits.0,
                     MAX_VALIDATORS_PER_COMMITTEE * MAX_COMMITTEES_PER_SLOT,
                 )?,
                 self.data.root(),
                 ssz::bytes_vector(&self.signature.0),
-                ssz::bitvector(&committee_bits.0, MAX_COMMITTEES_PER_SLOT)?,
-            ]))
-        } else {
-            if self.committee_bits.is_some() {
-                return Err("pre-electra attestation must not have committee_bits".into());
-            }
-            Ok(ssz::container(&[
-                ssz::bitlist(&self.aggregation_bits.0, MAX_VALIDATORS_PER_COMMITTEE)?,
+                ssz::bitvector(&committee_bits()?.0, MAX_COMMITTEES_PER_SLOT)?,
+            ])),
+            AttestationSchema::Gloas => Ok(ssz::progressive_container_dense(&[
+                ssz::progressive_bitlist(&self.aggregation_bits.0)?,
                 self.data.root(),
                 ssz::bytes_vector(&self.signature.0),
-            ]))
+                ssz::bitvector(&committee_bits()?.0, MAX_COMMITTEES_PER_SLOT)?,
+            ])),
         }
     }
 }
 
 impl AggregateAndProof {
-    fn root(&self, electra: bool) -> Result<Root, String> {
+    pub fn root(&self, schema: AttestationSchema) -> Result<Root, String> {
         Ok(ssz::container(&[
             ssz::uint64(self.aggregator_index.0),
-            self.aggregate.root(electra)?,
+            self.aggregate.root(schema)?,
             ssz::bytes_vector(&self.selection_proof.0),
+        ]))
+    }
+}
+
+impl PayloadAttestationData {
+    pub fn root(&self) -> Root {
+        ssz::container(&[
+            self.beacon_block_root.0,
+            ssz::uint64(self.slot.0),
+            ssz::boolean(self.payload_present),
+            ssz::boolean(self.blob_data_available),
+        ])
+    }
+}
+
+impl ProposerPreferences {
+    pub fn root(&self) -> Root {
+        ssz::container(&[
+            self.dependent_root.0,
+            ssz::uint64(self.proposal_slot.0),
+            ssz::uint64(self.validator_index.0),
+            ssz::bytes_vector(&self.fee_recipient.0),
+            ssz::uint64(self.target_gas_limit.0),
+        ])
+    }
+}
+
+impl BuilderRequestAuth {
+    pub fn root(&self) -> Result<Root, String> {
+        if self.data.0.is_empty() {
+            return Err("builder_request_auth data must not be empty".into());
+        }
+        Ok(ssz::container(&[
+            ssz::byte_list(&self.data.0, MAX_BUILDER_AUTH_DATA_SIZE)?,
+            ssz::uint64(self.slot.0),
+        ]))
+    }
+}
+
+impl Withdrawal {
+    pub fn root(&self) -> Root {
+        ssz::container(&[
+            ssz::uint64(self.index.0),
+            ssz::uint64(self.validator_index.0),
+            ssz::bytes_vector(&self.address.0),
+            ssz::uint64(self.amount.0),
+        ])
+    }
+}
+
+impl ExecutionPayload {
+    pub fn root(&self) -> Result<Root, String> {
+        let transactions: Vec<Root> = self
+            .transactions
+            .iter()
+            .map(|tx| ssz::progressive_list_packed(&tx.0, tx.0.len()))
+            .collect();
+        let withdrawals: Vec<Root> = self.withdrawals.iter().map(Withdrawal::root).collect();
+        Ok(ssz::progressive_container_dense(&[
+            self.parent_hash.0,
+            ssz::bytes_vector(&self.fee_recipient.0),
+            self.state_root.0,
+            self.receipts_root.0,
+            ssz::bytes_vector(&self.logs_bloom.0),
+            self.prev_randao.0,
+            ssz::uint64(self.block_number.0),
+            ssz::uint64(self.gas_limit.0),
+            ssz::uint64(self.gas_used.0),
+            ssz::uint64(self.timestamp.0),
+            ssz::byte_list(&self.extra_data.0, MAX_EXTRA_DATA_BYTES)?,
+            self.base_fee_per_gas.0,
+            self.block_hash.0,
+            ssz::progressive_list(&transactions),
+            ssz::progressive_list(&withdrawals),
+            ssz::uint64(self.blob_gas_used.0),
+            ssz::uint64(self.excess_blob_gas.0),
+            ssz::progressive_list_packed(&self.block_access_list.0, self.block_access_list.0.len()),
+            ssz::uint64(self.slot_number.0),
+        ]))
+    }
+}
+
+impl ExecutionRequests {
+    pub fn root(&self) -> Root {
+        let deposits: Vec<Root> = self
+            .deposits
+            .iter()
+            .map(|d| {
+                ssz::container(&[
+                    ssz::bytes_vector(&d.pubkey.0),
+                    d.withdrawal_credentials.0,
+                    ssz::uint64(d.amount.0),
+                    ssz::bytes_vector(&d.signature.0),
+                    ssz::uint64(d.index.0),
+                ])
+            })
+            .collect();
+        let withdrawals: Vec<Root> = self
+            .withdrawals
+            .iter()
+            .map(|w| {
+                ssz::container(&[
+                    ssz::bytes_vector(&w.source_address.0),
+                    ssz::bytes_vector(&w.validator_pubkey.0),
+                    ssz::uint64(w.amount.0),
+                ])
+            })
+            .collect();
+        let consolidations: Vec<Root> = self
+            .consolidations
+            .iter()
+            .map(|c| {
+                ssz::container(&[
+                    ssz::bytes_vector(&c.source_address.0),
+                    ssz::bytes_vector(&c.source_pubkey.0),
+                    ssz::bytes_vector(&c.target_pubkey.0),
+                ])
+            })
+            .collect();
+        let builder_deposits: Vec<Root> = self
+            .builder_deposits
+            .iter()
+            .map(|d| {
+                ssz::container(&[
+                    ssz::bytes_vector(&d.pubkey.0),
+                    d.withdrawal_credentials.0,
+                    ssz::uint64(d.amount.0),
+                    ssz::bytes_vector(&d.signature.0),
+                ])
+            })
+            .collect();
+        let builder_exits: Vec<Root> = self
+            .builder_exits
+            .iter()
+            .map(|e| {
+                ssz::container(&[
+                    ssz::bytes_vector(&e.source_address.0),
+                    ssz::bytes_vector(&e.pubkey.0),
+                ])
+            })
+            .collect();
+        ssz::progressive_container_dense(&[
+            ssz::progressive_list(&deposits),
+            ssz::progressive_list(&withdrawals),
+            ssz::progressive_list(&consolidations),
+            ssz::progressive_list(&builder_deposits),
+            ssz::progressive_list(&builder_exits),
+        ])
+    }
+}
+
+impl ExecutionPayloadEnvelope {
+    pub fn root(&self) -> Result<Root, String> {
+        Ok(ssz::progressive_container_dense(&[
+            self.payload.root()?,
+            self.execution_requests.root(),
+            ssz::uint64(self.builder_index.0),
+            self.beacon_block_root.0,
+            self.parent_beacon_block_root.0,
         ]))
     }
 }
@@ -412,8 +794,22 @@ impl ForkInfo {
 /// What the slashing protection database must check before signing.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SlashingCheck {
-    Block { slot: u64 },
-    Attestation { source: u64, target: u64 },
+    /// `block_root` is the header's `hash_tree_root`, recorded so the
+    /// block's execution payload envelope can be checked against it.
+    Block {
+        slot: u64,
+        block_root: Root,
+    },
+    Attestation {
+        source: u64,
+        target: u64,
+    },
+    /// Not slashable, but only signed for a block this key signed: the
+    /// latest signed block must be at `slot` with root `block_root`.
+    OwnBlockPayload {
+        slot: u64,
+        block_root: Root,
+    },
 }
 
 #[derive(Clone, Debug, Default)]
@@ -437,6 +833,8 @@ pub enum PrepareError {
     WrongNetwork(String),
     #[error("{0} signing is disabled by policy")]
     Forbidden(&'static str),
+    #[error("refused: {0}")]
+    Refused(String),
 }
 
 impl From<String> for PrepareError {
@@ -445,13 +843,44 @@ impl From<String> for PrepareError {
     }
 }
 
-fn is_electra_or_later(version: &str) -> Result<bool, PrepareError> {
-    match version.to_ascii_uppercase().as_str() {
-        "PHASE0" | "ALTAIR" | "BELLATRIX" | "CAPELLA" | "DENEB" => Ok(false),
-        "ELECTRA" | "FULU" => Ok(true),
-        other => Err(PrepareError::Invalid(format!(
-            "unsupported fork version {other:?}"
+fn parse_version(version: &str) -> Result<ForkName, PrepareError> {
+    ForkName::parse(version)
+        .ok_or_else(|| PrepareError::Invalid(format!("unsupported fork version {version:?}")))
+}
+
+/// The request's `version` must name the fork the network is in at `slot`.
+/// Without a known schedule (`custom:` networks) the request's word is taken.
+fn check_version(net: &Network, version: &str, slot: u64) -> Result<ForkName, PrepareError> {
+    let fork = parse_version(version)?;
+    if let Some(scheduled) = net.fork_at_slot(slot)
+        && scheduled.name != fork
+    {
+        return Err(PrepareError::Invalid(format!(
+            "version {fork} does not match fork {} at slot {slot}",
+            scheduled.name
+        )));
+    }
+    Ok(fork)
+}
+
+/// Gloas-only request types: `version` must be GLOAS and the network must be
+/// in Gloas at `slot` by its known schedule.
+fn require_gloas(net: &Network, version: &str, slot: u64) -> Result<(), PrepareError> {
+    if parse_version(version)? != ForkName::Gloas {
+        return Err(PrepareError::Invalid(format!(
+            "version must be GLOAS, got {version:?}"
+        )));
+    }
+    match net.fork_at_slot(slot) {
+        Some(f) if f.name == ForkName::Gloas => Ok(()),
+        Some(f) => Err(PrepareError::Invalid(format!(
+            "slot {slot} is in {}, not GLOAS",
+            f.name
         ))),
+        None => Err(PrepareError::Invalid(
+            "Gloas request types need a network with a fork schedule (a preset or --network-config)"
+                .into(),
+        )),
     }
 }
 
@@ -495,7 +924,6 @@ pub fn prepare(
             beacon_block,
         } => {
             check_net(fork_info)?;
-            is_electra_or_later(&beacon_block.version)?;
             let header = match (&beacon_block.block_header, &beacon_block.block) {
                 (Some(h), None) => h,
                 (None, Some(_)) => {
@@ -509,12 +937,15 @@ pub fn prepare(
                     ));
                 }
             };
+            check_version(net, &beacon_block.version, header.slot.0)?;
+            let block_root = header.root();
             let domain = fork_info.domain(DOMAIN_BEACON_PROPOSER, epoch_at_slot(header.slot.0));
             (
                 "BLOCK_V2",
-                compute_signing_root(&header.root(), &domain),
+                compute_signing_root(&block_root, &domain),
                 Some(SlashingCheck::Block {
                     slot: header.slot.0,
+                    block_root,
                 }),
             )
         }
@@ -549,19 +980,38 @@ pub fn prepare(
             aggregate_and_proof,
         } => {
             check_net(fork_info)?;
-            // Lighthouse and Teku keep sending the v1 type after Electra, with
-            // an Electra attestation inside. The v1 body carries no fork
-            // version, so `committee_bits` (Electra and later only) picks the
-            // schema. Either way the root is computed here and the domain is
-            // the aggregate domain, so this cannot yield a slashable signature.
-            let electra = aggregate_and_proof.aggregate.committee_bits.is_some();
-            let domain = fork_info.domain(
-                DOMAIN_AGGREGATE_AND_PROOF,
-                epoch_at_slot(aggregate_and_proof.aggregate.data.slot.0),
-            );
+            // Lighthouse and Teku keep sending the v1 type after Electra. The
+            // v1 body carries no fork version, so the fork at the aggregate's
+            // slot picks the schema, and `committee_bits` (Electra and later)
+            // must agree with it. Without a known schedule (`custom:`), the
+            // presence of `committee_bits` picks between Phase0 and Electra.
+            // Either way the root is computed here and the domain is the
+            // aggregate domain, so this cannot yield a slashable signature.
+            let slot = aggregate_and_proof.aggregate.data.slot.0;
+            let has_committee_bits = aggregate_and_proof.aggregate.committee_bits.is_some();
+            let schema = match net.fork_at_slot(slot) {
+                Some(f) => {
+                    let schema = AttestationSchema::for_fork(f.name);
+                    if has_committee_bits != (schema != AttestationSchema::Phase0) {
+                        return Err(PrepareError::Invalid(format!(
+                            "aggregate at slot {slot} ({}) {} committee_bits",
+                            f.name,
+                            if has_committee_bits {
+                                "must not have"
+                            } else {
+                                "must have"
+                            }
+                        )));
+                    }
+                    schema
+                }
+                None if has_committee_bits => AttestationSchema::Electra,
+                None => AttestationSchema::Phase0,
+            };
+            let domain = fork_info.domain(DOMAIN_AGGREGATE_AND_PROOF, epoch_at_slot(slot));
             (
                 "AGGREGATE_AND_PROOF",
-                compute_signing_root(&aggregate_and_proof.root(electra)?, &domain),
+                compute_signing_root(&aggregate_and_proof.root(schema)?, &domain),
                 None,
             )
         }
@@ -570,15 +1020,13 @@ pub fn prepare(
             aggregate_and_proof,
         } => {
             check_net(fork_info)?;
-            let electra = is_electra_or_later(&aggregate_and_proof.version)?;
             let data = &aggregate_and_proof.data;
-            let domain = fork_info.domain(
-                DOMAIN_AGGREGATE_AND_PROOF,
-                epoch_at_slot(data.aggregate.data.slot.0),
-            );
+            let slot = data.aggregate.data.slot.0;
+            let fork = check_version(net, &aggregate_and_proof.version, slot)?;
+            let domain = fork_info.domain(DOMAIN_AGGREGATE_AND_PROOF, epoch_at_slot(slot));
             (
                 "AGGREGATE_AND_PROOF_V2",
-                compute_signing_root(&data.root(electra)?, &domain),
+                compute_signing_root(&data.root(AttestationSchema::for_fork(fork))?, &domain),
                 None,
             )
         }
@@ -675,6 +1123,95 @@ pub fn prepare(
             ]);
             ("DEPOSIT", compute_signing_root(&root, &domain), None)
         }
+        SignBody::PayloadAttestationMessage {
+            fork_info,
+            payload_attestation_message: m,
+        } => {
+            check_net(fork_info)?;
+            let slot = m.data.slot.0;
+            require_gloas(net, &m.version, slot)?;
+            // validator.md get_payload_attestation_message_signature.
+            let domain = fork_info.domain(DOMAIN_PTC_ATTESTER, epoch_at_slot(slot));
+            (
+                "PAYLOAD_ATTESTATION_MESSAGE",
+                compute_signing_root(&m.data.root(), &domain),
+                None,
+            )
+        }
+        SignBody::ProposerPreferences {
+            fork_info,
+            proposer_preferences: p,
+        } => {
+            check_net(fork_info)?;
+            let slot = p.data.proposal_slot.0;
+            require_gloas(net, &p.version, slot)?;
+            // validator.md get_signed_proposer_preferences: the fork version
+            // of the proposal epoch (from the schedule, not fork_info, which
+            // describes the current state: preferences for the first Gloas
+            // epoch are signed before the fork).
+            let version = net.fork_at_slot(slot).expect("checked above").version;
+            let domain = compute_domain(
+                DOMAIN_PROPOSER_PREFERENCES,
+                version,
+                &net.genesis_validators_root,
+            );
+            (
+                "PROPOSER_PREFERENCES",
+                compute_signing_root(&p.data.root(), &domain),
+                None,
+            )
+        }
+        SignBody::ExecutionPayloadEnvelope {
+            fork_info,
+            execution_payload_envelope: e,
+        } => {
+            check_net(fork_info)?;
+            let env = &e.data;
+            // verify_execution_payload_envelope: slot_number == the block's
+            // slot. The slashing database checks that this key signed a block
+            // with this root at this slot, which pins the slot.
+            let slot = env.payload.slot_number.0;
+            require_gloas(net, &e.version, slot)?;
+            if env.builder_index.0 != BUILDER_INDEX_SELF_BUILD {
+                return Err(PrepareError::Refused(format!(
+                    "EXECUTION_PAYLOAD_ENVELOPE with builder_index {}: validator keys sign only self-built payloads",
+                    env.builder_index.0
+                )));
+            }
+            // builder.md get_execution_payload_envelope_signature: get_domain
+            // at the state's (the block's) epoch.
+            let domain = fork_info.domain(DOMAIN_BEACON_BUILDER, epoch_at_slot(slot));
+            (
+                "EXECUTION_PAYLOAD_ENVELOPE",
+                compute_signing_root(&env.root()?, &domain),
+                Some(SlashingCheck::OwnBlockPayload {
+                    slot,
+                    block_root: env.beacon_block_root.0,
+                }),
+            )
+        }
+        SignBody::ExecutionPayloadBid {} => {
+            return Err(PrepareError::Refused(
+                "EXECUTION_PAYLOAD_BID is signed by builders, not validators".into(),
+            ));
+        }
+        SignBody::BuilderRequestAuth {
+            builder_request_auth: a,
+        } => {
+            require_gloas(net, &a.version, a.data.slot.0)?;
+            // builder-specs: compute_domain(DOMAIN_BUILDER_REQUEST_AUTH), i.e.
+            // genesis fork version and a zero genesis validators root.
+            let domain = compute_domain(
+                DOMAIN_BUILDER_REQUEST_AUTH,
+                net.genesis_fork_version,
+                &[0u8; 32],
+            );
+            (
+                "BUILDER_REQUEST_AUTH",
+                compute_signing_root(&a.data.root()?, &domain),
+                None,
+            )
+        }
     };
 
     if let Some(provided) = &req.signing_root
@@ -692,4 +1229,27 @@ pub fn prepare(
         signing_root,
         slashing,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn uint256_decimal() {
+        let p = |s: &str| serde_json::from_value::<U256Le>(serde_json::json!(s));
+        assert_eq!(p("0").unwrap().0, [0; 32]);
+        let mut one_word = [0u8; 32];
+        one_word[8] = 1; // 2^64
+        assert_eq!(p("18446744073709551616").unwrap().0, one_word);
+        let max = "115792089237316195423570985008687907853269984665640564039457584007913129639935";
+        assert_eq!(p(max).unwrap().0, [0xff; 32]);
+        assert!(
+            p("115792089237316195423570985008687907853269984665640564039457584007913129639936")
+                .is_err()
+        );
+        assert!(p("").is_err());
+        assert!(p("0x10").is_err());
+        assert!(p("-1").is_err());
+    }
 }

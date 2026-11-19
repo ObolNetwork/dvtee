@@ -1,6 +1,7 @@
 //! Cross-implementation tests against vectors produced by `tests/vecgen`
-//! (go-eth2-client SSZ, herumi BLS and the wealdtech EIP-2335 encryptor, the
-//! same stack charon uses).
+//! (upstream go-eth2-client v0.30.3 SSZ, herumi BLS and the wealdtech EIP-2335
+//! encryptor, as charon uses them). The Gloas vectors run on Hoodi with Gloas
+//! scheduled at epoch 60000 (`tests/vectors/gloas-config.yaml`).
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -12,7 +13,7 @@ use serde::Deserialize;
 use sev_signer::api::{AppState, router};
 use sev_signer::keystore::{self, SecretKey};
 use sev_signer::network::Network;
-use sev_signer::signing::{self, Policy, SignRequest};
+use sev_signer::signing::{self, Policy, PrepareError, SignRequest};
 use sev_signer::slashing::SlashingDb;
 use tower::ServiceExt;
 
@@ -43,6 +44,35 @@ fn hoodi() -> Network {
     "hoodi".parse().unwrap()
 }
 
+/// Hoodi plus Gloas at epoch 60000, loaded through `--network-config`'s parser.
+fn hoodi_gloas() -> Network {
+    let cfg = std::fs::read_to_string(dir().join("gloas-config.yaml")).unwrap();
+    Network::from_config_yaml(&cfg, hoodi().genesis_validators_root).unwrap()
+}
+
+fn is_gloas(v: &Vector) -> bool {
+    v.name.contains("gloas")
+        || [
+            "PAYLOAD_ATTESTATION_MESSAGE",
+            "PROPOSER_PREFERENCES",
+            "EXECUTION_PAYLOAD_ENVELOPE",
+            "BUILDER_REQUEST_AUTH",
+        ]
+        .contains(&v.request["type"].as_str().unwrap())
+}
+
+fn get<'a>(v: &'a Vectors, name: &str) -> &'a Vector {
+    v.vectors
+        .iter()
+        .find(|x| x.name == name)
+        .unwrap_or_else(|| panic!("no vector {name}"))
+}
+
+fn prep(body: serde_json::Value, net: &Network) -> Result<signing::Prepared, PrepareError> {
+    let req: SignRequest = serde_json::from_value(body).unwrap();
+    signing::prepare(&req, net, &allow_all())
+}
+
 fn allow_all() -> Policy {
     Policy {
         allow_voluntary_exits: true,
@@ -59,12 +89,13 @@ fn signing_roots_and_signatures_match_go() {
     let v = vectors();
     let sk = secret(&v);
     assert_eq!(format!("0x{}", hex::encode(sk.public_key())), v.public_key);
-    assert_eq!(v.vectors.len(), 13);
+    assert_eq!(v.vectors.len(), 21);
+    assert_eq!(v.vectors.iter().filter(|x| is_gloas(x)).count(), 8);
 
     for vec in &v.vectors {
         let req: SignRequest = serde_json::from_value(vec.request.clone())
             .unwrap_or_else(|e| panic!("{}: parse: {e}", vec.name));
-        let p = signing::prepare(&req, &hoodi(), &allow_all())
+        let p = signing::prepare(&req, &hoodi_gloas(), &allow_all())
             .unwrap_or_else(|e| panic!("{}: prepare: {e}", vec.name));
         assert_eq!(
             format!("0x{}", hex::encode(p.signing_root)),
@@ -89,7 +120,7 @@ fn roots_are_computed_not_trusted() {
         let mut body = vec.request.clone();
         body.as_object_mut().unwrap().remove("signingRoot");
         let req: SignRequest = serde_json::from_value(body).unwrap();
-        let p = signing::prepare(&req, &hoodi(), &allow_all()).unwrap();
+        let p = signing::prepare(&req, &hoodi_gloas(), &allow_all()).unwrap();
         assert_eq!(
             format!("0x{}", hex::encode(p.signing_root)),
             vec.signing_root,
@@ -102,10 +133,31 @@ fn roots_are_computed_not_trusted() {
         body["signingRoot"] = serde_json::json!(format!("0x{}", "11".repeat(32)));
         let req: SignRequest = serde_json::from_value(body).unwrap();
         assert!(
-            signing::prepare(&req, &hoodi(), &allow_all()).is_err(),
+            signing::prepare(&req, &hoodi_gloas(), &allow_all()).is_err(),
             "{}",
             vec.name
         );
+    }
+}
+
+/// On the real Hoodi schedule (Gloas not scheduled) the pre-Gloas vectors
+/// still sign and every versioned Gloas one is refused. (ATTESTATION carries
+/// no version and has the same shape in every fork.)
+#[test]
+fn hoodi_preset_refuses_gloas() {
+    let v = vectors();
+    for vec in &v.vectors {
+        let r = prep(vec.request.clone(), &hoodi());
+        if is_gloas(vec) && vec.name != "attestation_gloas" {
+            assert!(r.is_err(), "{}", vec.name);
+        } else {
+            assert_eq!(
+                format!("0x{}", hex::encode(r.unwrap().signing_root)),
+                vec.signing_root,
+                "{}",
+                vec.name
+            );
+        }
     }
 }
 
@@ -115,11 +167,7 @@ fn roots_are_computed_not_trusted() {
 #[test]
 fn v1_aggregate_type_with_electra_body() {
     let v = vectors();
-    let v2 = v
-        .vectors
-        .iter()
-        .find(|x| x.name == "aggregate_and_proof_v2_electra")
-        .unwrap();
+    let v2 = get(&v, "aggregate_and_proof_v2_fulu");
     let mut body = v2.request.clone();
     let inner = body["aggregate_and_proof"]["data"].clone();
     body["type"] = serde_json::json!("AGGREGATE_AND_PROOF");
@@ -131,6 +179,179 @@ fn v1_aggregate_type_with_electra_body() {
         format!("0x{}", hex::encode(p.signing_root)),
         v2.signing_root
     );
+}
+
+/// The v1 aggregate type has no version: the fork at the slot picks the
+/// schema and `committee_bits` must agree with it.
+#[test]
+fn v1_aggregate_schema_follows_fork() {
+    let v = vectors();
+    let net = hoodi_gloas();
+    let gloas = &get(&v, "aggregate_and_proof_gloas").request;
+    let mut no_bits = gloas.clone();
+    no_bits["aggregate_and_proof"]["aggregate"]
+        .as_object_mut()
+        .unwrap()
+        .remove("committee_bits");
+    no_bits.as_object_mut().unwrap().remove("signingRoot");
+    assert!(prep(no_bits, &net).is_err());
+
+    let phase0 = &get(&v, "aggregate_and_proof_phase0").request;
+    let mut with_bits = phase0.clone();
+    with_bits["aggregate_and_proof"]["aggregate"]["committee_bits"] =
+        serde_json::json!("0x0100000000000000");
+    with_bits.as_object_mut().unwrap().remove("signingRoot");
+    assert!(prep(with_bits, &net).is_err());
+
+    // Without a fork schedule (custom:), committee_bits picks Phase0 vs
+    // Electra as before, so a Gloas body cannot be hashed correctly: that is
+    // why Gloas needs a schedule.
+    let custom: Network = format!(
+        "custom:0x{}:0x10000910:0x40000910",
+        hex::encode(hoodi().genesis_validators_root)
+    )
+    .parse()
+    .unwrap();
+    assert_eq!(
+        format!(
+            "0x{}",
+            hex::encode(prep(phase0.clone(), &custom).unwrap().signing_root)
+        ),
+        get(&v, "aggregate_and_proof_phase0").signing_root
+    );
+    assert!(
+        prep(gloas.clone(), &custom).is_err(),
+        "signingRoot mismatch"
+    );
+}
+
+#[test]
+fn version_must_match_fork_at_slot() {
+    let v = vectors();
+    let net = hoodi_gloas();
+    for (name, path, wrong) in [
+        ("block_v2_gloas", "/beacon_block/version", "FULU"),
+        ("block_v2_fulu", "/beacon_block/version", "GLOAS"),
+        ("block_v2_fulu", "/beacon_block/version", "ELECTRA"),
+        (
+            "aggregate_and_proof_v2_fulu",
+            "/aggregate_and_proof/version",
+            "ELECTRA",
+        ),
+        (
+            "aggregate_and_proof_v2_gloas",
+            "/aggregate_and_proof/version",
+            "FULU",
+        ),
+        (
+            "payload_attestation_message",
+            "/payload_attestation_message/version",
+            "FULU",
+        ),
+        (
+            "proposer_preferences_fork_boundary",
+            "/proposer_preferences/version",
+            "FULU",
+        ),
+        (
+            "execution_payload_envelope",
+            "/execution_payload_envelope/version",
+            "FULU",
+        ),
+        (
+            "builder_request_auth",
+            "/builder_request_auth/version",
+            "FULU",
+        ),
+        ("block_v2_gloas", "/beacon_block/version", "HEZE"),
+    ] {
+        let mut body = get(&v, name).request.clone();
+        *body.pointer_mut(path).unwrap() = serde_json::json!(wrong);
+        body.as_object_mut().unwrap().remove("signingRoot");
+        let err = prep(body, &net).unwrap_err();
+        assert!(
+            matches!(err, PrepareError::Invalid(_)),
+            "{name} {wrong}: {err}"
+        );
+    }
+    // Lower case is accepted.
+    let mut body = get(&v, "block_v2_gloas").request.clone();
+    body["beacon_block"]["version"] = serde_json::json!("gloas");
+    prep(body, &net).unwrap();
+
+    // A Gloas-only type for a slot before the fork.
+    let mut body = get(&v, "payload_attestation_message").request.clone();
+    body["payload_attestation_message"]["data"]["slot"] = serde_json::json!("1622116");
+    body.as_object_mut().unwrap().remove("signingRoot");
+    assert!(prep(body, &net).is_err());
+}
+
+/// The proposer preferences domain takes the fork version of the proposal
+/// epoch from the schedule, whatever fork_info says (only its genesis
+/// validators root is checked).
+#[test]
+fn proposer_preferences_domain_from_schedule() {
+    let v = vectors();
+    let vec = get(&v, "proposer_preferences_fork_boundary");
+    assert_eq!(
+        vec.request["fork_info"]["fork"]["current_version"], "0x70000910",
+        "signed from Fulu"
+    );
+    let mut body = vec.request.clone();
+    body["fork_info"]["fork"]["current_version"] = serde_json::json!("0x80000910");
+    body["fork_info"]["fork"]["epoch"] = serde_json::json!("60000");
+    assert_eq!(
+        format!(
+            "0x{}",
+            hex::encode(prep(body, &hoodi_gloas()).unwrap().signing_root)
+        ),
+        vec.signing_root
+    );
+}
+
+#[test]
+fn envelope_and_bid_policy() {
+    let v = vectors();
+    let net = hoodi_gloas();
+    let env = get(&v, "execution_payload_envelope");
+    let p = prep(env.request.clone(), &net).unwrap();
+    let block = prep(get(&v, "block_v2_gloas").request.clone(), &net).unwrap();
+    let Some(signing::SlashingCheck::Block { slot, block_root }) = block.slashing else {
+        panic!("block check")
+    };
+    assert_eq!(
+        p.slashing,
+        Some(signing::SlashingCheck::OwnBlockPayload { slot, block_root })
+    );
+
+    let mut builder = env.request.clone();
+    builder["execution_payload_envelope"]["data"]["builder_index"] = serde_json::json!("7");
+    builder.as_object_mut().unwrap().remove("signingRoot");
+    assert!(matches!(prep(builder, &net), Err(PrepareError::Refused(_))));
+
+    let bid = serde_json::json!({"type": "EXECUTION_PAYLOAD_BID", "anything": [1, 2]});
+    assert!(matches!(prep(bid, &net), Err(PrepareError::Refused(_))));
+}
+
+#[test]
+fn builder_request_auth_data_bounds() {
+    let v = vectors();
+    let net = hoodi_gloas();
+    let mut body = get(&v, "builder_request_auth").request.clone();
+    body.as_object_mut().unwrap().remove("signingRoot");
+    for (data, ok) in [
+        ("0x".to_string(), false),
+        (format!("0x{}", "ab".repeat(4096)), true),
+        (format!("0x{}", "ab".repeat(4097)), false),
+    ] {
+        body["builder_request_auth"]["data"]["data"] = serde_json::json!(data);
+        assert_eq!(
+            prep(body.clone(), &net).is_ok(),
+            ok,
+            "{} bytes",
+            data.len() / 2 - 1
+        );
+    }
 }
 
 #[test]
@@ -150,7 +371,10 @@ fn charon_keystores_decrypt() {
 }
 
 fn app(data: &std::path::Path, policy: Policy) -> axum::Router {
-    let net = hoodi();
+    app_on(data, policy, hoodi_gloas())
+}
+
+fn app_on(data: &std::path::Path, policy: Policy, net: Network) -> axum::Router {
     let state = AppState {
         keys: keystore::load_dir(&dir().join("keystores")).unwrap(),
         db: SlashingDb::open(&data.join("slashing"), net.genesis_validators_root).unwrap(),
@@ -186,7 +410,7 @@ async fn post(
 #[tokio::test]
 async fn http_api() {
     let v = vectors();
-    let get = |name: &str| v.vectors.iter().find(|x| x.name == name).unwrap();
+    let get = |name: &str| get(&v, name);
     let tmp = tempfile::tempdir().unwrap();
     let app = app(
         tmp.path(),
@@ -274,5 +498,77 @@ async fn http_api() {
         post(&app, pk, &block.request, false).await.0,
         StatusCode::OK,
         "identical re-sign"
+    );
+}
+
+#[tokio::test]
+async fn http_api_gloas() {
+    let v = vectors();
+    let get = |name: &str| get(&v, name);
+    let tmp = tempfile::tempdir().unwrap();
+    let app = app(tmp.path(), Policy::default());
+    let pk = &v.public_key;
+    let env = get("execution_payload_envelope");
+    let block = get("block_v2_gloas");
+
+    // The envelope needs this key's block first.
+    let (s, b) = post(&app, pk, &env.request, false).await;
+    assert_eq!(s, StatusCode::PRECONDITION_FAILED, "{b}");
+    let (s, b) = post(&app, pk, &block.request, false).await;
+    assert_eq!((s, b.as_str()), (StatusCode::OK, block.signature.as_str()));
+    let (s, b) = post(&app, pk, &env.request, false).await;
+    assert_eq!((s, b.as_str()), (StatusCode::OK, env.signature.as_str()));
+
+    // An envelope for another block root at the same slot.
+    let mut other = env.request.clone();
+    other["execution_payload_envelope"]["data"]["beacon_block_root"] =
+        serde_json::json!(format!("0x{}", "ee".repeat(32)));
+    other.as_object_mut().unwrap().remove("signingRoot");
+    assert_eq!(
+        post(&app, pk, &other, false).await.0,
+        StatusCode::PRECONDITION_FAILED
+    );
+
+    // Refused outright: external builder envelopes and bids.
+    let mut builder = env.request.clone();
+    builder["execution_payload_envelope"]["data"]["builder_index"] = serde_json::json!("3");
+    builder.as_object_mut().unwrap().remove("signingRoot");
+    assert_eq!(
+        post(&app, pk, &builder, false).await.0,
+        StatusCode::FORBIDDEN
+    );
+    let bid = serde_json::json!({"type": "EXECUTION_PAYLOAD_BID", "execution_payload_bid": {}});
+    assert_eq!(post(&app, pk, &bid, false).await.0, StatusCode::FORBIDDEN);
+
+    for name in [
+        "payload_attestation_message",
+        "proposer_preferences_fork_boundary",
+        "builder_request_auth",
+        "aggregate_and_proof_v2_gloas",
+        "attestation_gloas",
+    ] {
+        let vec = get(name);
+        let (s, b) = post(&app, pk, &vec.request, true).await;
+        assert_eq!(s, StatusCode::OK, "{name}: {b}");
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&b).unwrap()["signature"],
+            vec.signature,
+            "{name}"
+        );
+    }
+
+    // A large envelope (8 MiB of transactions) fits the request size limit.
+    let mut big = env.request.clone();
+    big["execution_payload_envelope"]["data"]["payload"]["transactions"] =
+        serde_json::json!([format!("0x{}", "ab".repeat(8 << 20))]);
+    big.as_object_mut().unwrap().remove("signingRoot");
+    assert_eq!(post(&app, pk, &big, false).await.0, StatusCode::OK);
+
+    // Gloas types are refused on a network without Gloas scheduled.
+    let tmp2 = tempfile::tempdir().unwrap();
+    let hoodi_app = app_on(tmp2.path(), Policy::default(), hoodi());
+    assert_eq!(
+        post(&hoodi_app, pk, &block.request, false).await.0,
+        StatusCode::BAD_REQUEST
     );
 }
