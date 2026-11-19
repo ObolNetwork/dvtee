@@ -7,7 +7,7 @@ use clap::{Parser, Subcommand};
 use sha2::{Digest, Sha256};
 
 use sev_signer::api::{self, AppState};
-use sev_signer::network::Network;
+use sev_signer::network::{self, Network};
 use sev_signer::platform::{PlatformArgs, SnpKeyParams};
 use sev_signer::signing::Policy;
 use sev_signer::slashing::SlashingDb;
@@ -34,8 +34,8 @@ enum Cmd {
             default_value = "/var/lib/sev-signer"
         )]
         data_dir: PathBuf,
-        #[arg(long, env = "SEV_SIGNER_NETWORK")]
-        network: Network,
+        #[command(flatten)]
+        network: NetworkArgs,
     },
     /// Write a 32-byte sealing key for PURPOSE to stdout, e.g. for
     /// `cryptsetup open --key-file=-`. On SEV-SNP it is derived from the
@@ -75,6 +75,47 @@ enum Cmd {
 }
 
 #[derive(clap::Args)]
+struct NetworkArgs {
+    /// Network to sign for, as Web3Signer and Teku take it: a preset name
+    /// (mainnet, hoodi, sepolia) or the path of a consensus config.yaml with
+    /// the fork schedule (e.g. a devnet's network-configs/config.yaml). A
+    /// config file needs --genesis-validators-root. The older
+    /// custom:<gvr>:<genesis_fork>:<capella_fork> form still works but has no
+    /// fork schedule, so Gloas request types are refused on it.
+    #[arg(long, env = "SEV_SIGNER_NETWORK", value_name = "NAME|CONFIG.YAML")]
+    network: String,
+    /// Genesis validators root, hex. Required with a config.yaml --network,
+    /// because the config file doesn't contain it.
+    #[arg(long, env = "SEV_SIGNER_GENESIS_VALIDATORS_ROOT")]
+    genesis_validators_root: Option<String>,
+}
+
+impl NetworkArgs {
+    fn resolve(&self) -> anyhow::Result<Network> {
+        let is_file = self.network.contains(std::path::MAIN_SEPARATOR)
+            || self.network.contains('/')
+            || self.network.ends_with(".yaml")
+            || self.network.ends_with(".yml");
+        if !is_file {
+            if self.genesis_validators_root.is_some() {
+                bail!("--genesis-validators-root is only used with a config.yaml --network");
+            }
+            return self.network.parse::<Network>().map_err(anyhow::Error::msg);
+        }
+        let Some(gvr) = &self.genesis_validators_root else {
+            bail!(
+                "--network {} is a config file; it needs --genesis-validators-root",
+                self.network
+            );
+        };
+        let gvr = network::parse_root(gvr).map_err(anyhow::Error::msg)?;
+        let cfg = std::fs::read_to_string(&self.network)
+            .with_context(|| format!("reading {}", self.network))?;
+        Network::from_config_yaml(&cfg, gvr).map_err(|e| anyhow::anyhow!("{}: {e}", self.network))
+    }
+}
+
+#[derive(clap::Args)]
 struct ServeArgs {
     #[arg(long, env = "SEV_SIGNER_LISTEN", default_value = "127.0.0.1:9000")]
     listen: SocketAddr,
@@ -90,9 +131,8 @@ struct ServeArgs {
     /// validator_keys layout).
     #[arg(long, env = "SEV_SIGNER_KEYSTORES_DIR")]
     keystores_dir: PathBuf,
-    /// mainnet, hoodi, sepolia, or custom:<gvr>:<genesis_fork>:<capella_fork>.
-    #[arg(long, env = "SEV_SIGNER_NETWORK")]
-    network: Network,
+    #[command(flatten)]
+    network: NetworkArgs,
     /// Serve plain HTTP. Only for development: TLS must terminate inside the
     /// TEE for attestation to mean anything.
     #[arg(long, env = "SEV_SIGNER_INSECURE_HTTP")]
@@ -130,6 +170,7 @@ fn main() -> anyhow::Result<()> {
             tokio::runtime::Runtime::new()?.block_on(serve(args))
         }
         Cmd::SlashingExport { data_dir, network } => {
+            let network = network.resolve()?;
             let db = SlashingDb::open(&data_dir.join("slashing"), network.genesis_validators_root)?;
             println!("{}", serde_json::to_string_pretty(&db.export()?)?);
             Ok(())
@@ -185,9 +226,10 @@ fn init_logging(json: bool) {
 }
 
 async fn serve(args: ServeArgs) -> anyhow::Result<()> {
+    let network = args.network.resolve()?;
     let platform = args.platform.build()?;
     if platform.is_insecure() {
-        refuse_mainnet(&args.network)?;
+        refuse_mainnet(&network)?;
         tracing::warn!(
             "INSECURE-DEV PLATFORM: no TEE, keys are readable by the host, evidence is unsigned. \
              Development and testing only."
@@ -201,7 +243,7 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
 
     let db = SlashingDb::open(
         &args.data_dir.join("slashing"),
-        args.network.genesis_validators_root,
+        network.genesis_validators_root,
     )?;
     if let Some(path) = &args.slashing_protection_import {
         let n = db.import(&std::fs::read(path)?)?;
@@ -222,7 +264,7 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     let state = Arc::new(AppState {
         keys,
         db,
-        network: args.network.clone(),
+        network: network.clone(),
         policy: Policy {
             allow_voluntary_exits: args.allow_voluntary_exits,
             allow_deposits: args.allow_deposits,
@@ -236,7 +278,12 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
 
     tracing::info!(
         listen = %args.listen,
-        network = %args.network.name,
+        network = %network.name,
+        gloas_epoch = ?network
+            .forks
+            .iter()
+            .find(|f| f.name == network::ForkName::Gloas && f.epoch != network::FAR_FUTURE_EPOCH)
+            .map(|f| f.epoch),
         keys = state.keys.len(),
         tls = tls.is_some(),
         mtls = args.tls_known_clients.is_some(),

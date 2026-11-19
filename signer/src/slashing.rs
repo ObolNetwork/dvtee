@@ -6,6 +6,10 @@
 //!   (or an identical re-sign), which also rules out surround votes.
 //!
 //! The new watermark is fsynced to disk *before* the signature is produced.
+//!
+//! The block watermark also keeps the signed block's root, so a Gloas
+//! execution payload envelope is only signed for the block this key signed
+//! (see `SlashingCheck::OwnBlockPayload`).
 //! One small JSON file per key keeps the format trivially auditable.
 //!
 //! Inside a TEE the disk is host-controlled storage: confidentiality and
@@ -43,6 +47,10 @@ struct BlockMark {
     slot: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     signing_root: Option<String>,
+    /// `hash_tree_root` of the signed block (header). Absent in records
+    /// written before it was introduced and after an interchange import.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    block_root: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Default, Clone, Debug, PartialEq, Eq)]
@@ -166,10 +174,20 @@ impl SlashingDb {
         let root_hex = Some(hex0x(root));
 
         match check {
-            SlashingCheck::Block { slot } => {
+            SlashingCheck::Block { slot, block_root } => {
+                let block_root = Some(hex0x(&block_root));
                 if let Some(last) = &rec.block {
                     if slot == last.slot && last.signing_root == root_hex {
-                        return Ok(());
+                        if last.block_root == block_root {
+                            return Ok(());
+                        }
+                        // Identical re-sign of a record without the block
+                        // root: backfill it (durably, before signing).
+                        rec.block = Some(BlockMark {
+                            block_root,
+                            ..last.clone()
+                        });
+                        return self.store(pubkey, &rec);
                     }
                     if slot <= last.slot {
                         return Err(SlashingError::Violation(format!(
@@ -181,6 +199,7 @@ impl SlashingDb {
                 rec.block = Some(BlockMark {
                     slot,
                     signing_root: root_hex,
+                    block_root,
                 });
             }
             SlashingCheck::Attestation { source, target } => {
@@ -206,6 +225,22 @@ impl SlashingDb {
                     target,
                     signing_root: root_hex,
                 });
+            }
+            SlashingCheck::OwnBlockPayload { slot, block_root } => {
+                // Read-only: signing a payload envelope moves no watermark.
+                let wanted = hex0x(&block_root);
+                return match &rec.block {
+                    Some(b) if b.slot == slot && b.block_root.as_deref() == Some(&wanted) => Ok(()),
+                    _ => Err(SlashingError::Violation(format!(
+                        "no block with root {wanted} at slot {slot} was signed by this key \
+                         (last signed block: {})",
+                        rec.block.as_ref().map_or("none".into(), |b| format!(
+                            "slot {} root {}",
+                            b.slot,
+                            b.block_root.as_deref().unwrap_or("unknown")
+                        ))
+                    ))),
+                };
             }
         }
 
@@ -245,6 +280,7 @@ impl SlashingDb {
                     rec.block = Some(BlockMark {
                         slot: max,
                         signing_root: None,
+                        block_root: None,
                     });
                 }
             }
@@ -396,7 +432,10 @@ mod tests {
     #[test]
     fn blocks() {
         let (_d, db) = db();
-        let block = |slot| SlashingCheck::Block { slot };
+        let block = |slot| SlashingCheck::Block {
+            slot,
+            block_root: [slot as u8; 32],
+        };
         db.check_and_record(&PK, block(10), &[1; 32]).unwrap();
         // Identical re-sign is allowed, different root at same slot is not.
         db.check_and_record(&PK, block(10), &[1; 32]).unwrap();
@@ -446,8 +485,15 @@ mod tests {
         });
         db.import(ic.to_string().as_bytes()).unwrap();
         assert!(
-            db.check_and_record(&PK, SlashingCheck::Block { slot: 100 }, &[9; 32])
-                .is_err()
+            db.check_and_record(
+                &PK,
+                SlashingCheck::Block {
+                    slot: 100,
+                    block_root: [9; 32]
+                },
+                &[9; 32]
+            )
+            .is_err()
         );
         assert!(db.check_and_record(&PK, att(5, 9), &[9; 32]).is_err());
         db.check_and_record(&PK, att(5, 10), &[9; 32]).unwrap();
@@ -461,5 +507,70 @@ mod tests {
         let (_d2, other) = self::db();
         other.import(out.to_string().as_bytes()).unwrap();
         assert!(other.check_and_record(&PK, att(5, 10), &[0; 32]).is_err());
+    }
+
+    #[test]
+    fn payload_envelope_needs_own_block() {
+        let (_d, db) = db();
+        let payload = |slot, root| SlashingCheck::OwnBlockPayload {
+            slot,
+            block_root: root,
+        };
+        assert!(
+            db.check_and_record(&PK, payload(10, [5; 32]), &[1; 32])
+                .is_err()
+        );
+        let block = SlashingCheck::Block {
+            slot: 10,
+            block_root: [5; 32],
+        };
+        db.check_and_record(&PK, block, &[1; 32]).unwrap();
+        db.check_and_record(&PK, payload(10, [5; 32]), &[2; 32])
+            .unwrap();
+        // Different block root or slot.
+        assert!(
+            db.check_and_record(&PK, payload(10, [6; 32]), &[2; 32])
+                .is_err()
+        );
+        assert!(
+            db.check_and_record(&PK, payload(11, [5; 32]), &[2; 32])
+                .is_err()
+        );
+        // Signing the envelope moved no watermark: the block can be re-signed.
+        db.check_and_record(&PK, block, &[1; 32]).unwrap();
+        // Another key never signed it.
+        assert!(
+            db.check_and_record(&[8; 48], payload(10, [5; 32]), &[2; 32])
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn records_without_block_root_still_load() {
+        let (dir, db) = db();
+        // A record as written before block roots were kept.
+        let old = serde_json::json!({
+            "block": {"slot": 10, "signing_root": hex0x(&[1u8; 32])},
+            "attestation": {"source": 5, "target": 6, "signing_root": hex0x(&[2u8; 32])},
+        });
+        fs::write(
+            dir.path().join(format!("{}.json", hex::encode(PK))),
+            old.to_string(),
+        )
+        .unwrap();
+        let block = SlashingCheck::Block {
+            slot: 10,
+            block_root: [5; 32],
+        };
+        let payload = SlashingCheck::OwnBlockPayload {
+            slot: 10,
+            block_root: [5; 32],
+        };
+        assert!(db.check_and_record(&PK, payload, &[3; 32]).is_err());
+        assert!(db.check_and_record(&PK, att(5, 6), &[9; 32]).is_err());
+        // An identical re-sign backfills the block root.
+        db.check_and_record(&PK, block, &[1; 32]).unwrap();
+        db.check_and_record(&PK, payload, &[3; 32]).unwrap();
+        assert!(db.check_and_record(&PK, block, &[4; 32]).is_err());
     }
 }

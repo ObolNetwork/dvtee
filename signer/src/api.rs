@@ -30,6 +30,11 @@ pub struct AppState {
     pub platform: Platform,
 }
 
+/// Sign requests carry at most a Gloas execution payload envelope: a full
+/// execution payload, hex-encoded. EIP-7934 caps the RLP block at 10 MiB,
+/// which is ~20 MiB as JSON hex, plus the block access list.
+const SIGN_BODY_LIMIT: usize = 32 * 1024 * 1024;
+
 pub fn router(state: Arc<AppState>) -> Router {
     Router::new()
         .route("/upcheck", get(|| async { "OK" }))
@@ -38,7 +43,10 @@ pub fn router(state: Arc<AppState>) -> Router {
             get(|| async { Json(json!({"status": "UP"})) }),
         )
         .route("/api/v1/eth2/publicKeys", get(public_keys))
-        .route("/api/v1/eth2/sign/{identifier}", post(sign))
+        .route(
+            "/api/v1/eth2/sign/{identifier}",
+            post(sign).layer(DefaultBodyLimit::max(SIGN_BODY_LIMIT)),
+        )
         .route("/api/v1/tee/attestation", get(attestation))
         .layer(DefaultBodyLimit::max(256 * 1024))
         .with_state(state)
@@ -107,7 +115,7 @@ async fn sign(
         Ok(p) => p,
         Err(e) => {
             let status = match e {
-                PrepareError::Forbidden(_) => StatusCode::FORBIDDEN,
+                PrepareError::Forbidden(_) | PrepareError::Refused(_) => StatusCode::FORBIDDEN,
                 _ => StatusCode::BAD_REQUEST,
             };
             tracing::warn!(pubkey = %identifier, %status, error = %e, "rejected sign request");

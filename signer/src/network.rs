@@ -1,5 +1,6 @@
 //! Network parameters the signer cannot take from the (untrusted) request.
 
+use std::fmt;
 use std::str::FromStr;
 
 use crate::ssz::Root;
@@ -8,6 +9,69 @@ use crate::ssz::Root;
 /// different `SLOTS_PER_EPOCH` and are deliberately not supported.
 pub const SLOTS_PER_EPOCH: u64 = 32;
 
+pub const FAR_FUTURE_EPOCH: u64 = u64::MAX;
+
+/// Consensus forks, in activation order.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum ForkName {
+    Phase0,
+    Altair,
+    Bellatrix,
+    Capella,
+    Deneb,
+    Electra,
+    Fulu,
+    Gloas,
+}
+
+impl ForkName {
+    pub const ALL: [ForkName; 8] = [
+        ForkName::Phase0,
+        ForkName::Altair,
+        ForkName::Bellatrix,
+        ForkName::Capella,
+        ForkName::Deneb,
+        ForkName::Electra,
+        ForkName::Fulu,
+        ForkName::Gloas,
+    ];
+
+    /// Upper-case name as used in Web3Signer `version` fields and config keys.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ForkName::Phase0 => "PHASE0",
+            ForkName::Altair => "ALTAIR",
+            ForkName::Bellatrix => "BELLATRIX",
+            ForkName::Capella => "CAPELLA",
+            ForkName::Deneb => "DENEB",
+            ForkName::Electra => "ELECTRA",
+            ForkName::Fulu => "FULU",
+            ForkName::Gloas => "GLOAS",
+        }
+    }
+
+    /// Case-insensitive parse of a Web3Signer `version` value.
+    pub fn parse(s: &str) -> Option<ForkName> {
+        ForkName::ALL
+            .into_iter()
+            .find(|f| f.as_str().eq_ignore_ascii_case(s))
+    }
+}
+
+impl fmt::Display for ForkName {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ScheduledFork {
+    pub name: ForkName,
+    pub version: [u8; 4],
+    /// `FAR_FUTURE_EPOCH` if not scheduled.
+    pub epoch: u64,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Network {
     pub name: String,
@@ -15,46 +79,249 @@ pub struct Network {
     pub genesis_fork_version: [u8; 4],
     /// Used for voluntary exits post-Deneb (EIP-7044).
     pub capella_fork_version: [u8; 4],
-}
-
-fn net(name: &str, gvr: &str, genesis: [u8; 4], capella: [u8; 4]) -> Network {
-    let mut root = [0u8; 32];
-    hex::decode_to_slice(gvr, &mut root).expect("static genesis validators root");
-    Network {
-        name: name.to_string(),
-        genesis_validators_root: root,
-        genesis_fork_version: genesis,
-        capella_fork_version: capella,
-    }
+    /// One entry per fork in `ForkName::ALL` order, or empty when unknown
+    /// (`custom:`), in which case fork-dependent checks fall back to what the
+    /// request says and Gloas-only request types are refused.
+    pub forks: Vec<ScheduledFork>,
 }
 
 impl Network {
+    /// The fork active at `epoch`, if the schedule is known.
+    pub fn fork_at_epoch(&self, epoch: u64) -> Option<ScheduledFork> {
+        self.forks
+            .iter()
+            .rev()
+            .find(|f| f.epoch != FAR_FUTURE_EPOCH && f.epoch <= epoch)
+            .copied()
+    }
+
+    pub fn fork_at_slot(&self, slot: u64) -> Option<ScheduledFork> {
+        self.fork_at_epoch(slot / SLOTS_PER_EPOCH)
+    }
+
+    pub fn has_schedule(&self) -> bool {
+        !self.forks.is_empty()
+    }
+
+    /// Builds a network from a standard consensus-layer `config.yaml` (the
+    /// format of eth-clients/*/metadata/config.yaml and Kurtosis'
+    /// network-configs/config.yaml) and the genesis validators root, which the
+    /// config does not carry.
+    ///
+    /// Only flat `KEY: value` lines are read: `PRESET_BASE`, `CONFIG_NAME`,
+    /// `GENESIS_FORK_VERSION` and `<FORK>_FORK_VERSION`/`<FORK>_FORK_EPOCH`
+    /// up to Gloas. A fork whose keys are absent counts as unscheduled.
+    pub fn from_config_yaml(config: &str, genesis_validators_root: Root) -> Result<Self, String> {
+        let mut kv = std::collections::HashMap::new();
+        for line in config.lines() {
+            // Nested values (e.g. BLOB_SCHEDULE entries) are indented or list
+            // items; only top-level scalars matter here.
+            if line.starts_with([' ', '\t', '-', '#']) {
+                continue;
+            }
+            let line = line.split(" #").next().unwrap_or("").trim();
+            let Some((k, v)) = line.split_once(':') else {
+                continue;
+            };
+            let v = v.trim().trim_matches(|c| c == '\'' || c == '"');
+            kv.insert(k.trim().to_string(), v.to_string());
+        }
+
+        match kv.get("PRESET_BASE").map(String::as_str) {
+            Some("mainnet") => {}
+            other => {
+                return Err(format!(
+                    "PRESET_BASE must be mainnet (SLOTS_PER_EPOCH is fixed at {SLOTS_PER_EPOCH}), got {other:?}"
+                ));
+            }
+        }
+        let version = |key: &str| -> Result<Option<[u8; 4]>, String> {
+            kv.get(key)
+                .map(|v| {
+                    let mut out = [0u8; 4];
+                    hex::decode_to_slice(v.trim_start_matches("0x"), &mut out)
+                        .map_err(|e| format!("{key}: {e}"))?;
+                    Ok(out)
+                })
+                .transpose()
+        };
+        let epoch = |key: &str| -> Result<Option<u64>, String> {
+            kv.get(key)
+                .map(|v| v.parse::<u64>().map_err(|e| format!("{key}: {e}")))
+                .transpose()
+        };
+
+        let genesis = version("GENESIS_FORK_VERSION")?.ok_or("GENESIS_FORK_VERSION missing")?;
+        let mut forks = vec![ScheduledFork {
+            name: ForkName::Phase0,
+            version: genesis,
+            epoch: 0,
+        }];
+        for name in &ForkName::ALL[1..] {
+            let v = version(&format!("{name}_FORK_VERSION"))?;
+            let e = epoch(&format!("{name}_FORK_EPOCH"))?;
+            let fork = match (v, e) {
+                (Some(version), Some(epoch)) => ScheduledFork {
+                    name: *name,
+                    version,
+                    epoch,
+                },
+                (_, None | Some(FAR_FUTURE_EPOCH)) => ScheduledFork {
+                    name: *name,
+                    version: v.unwrap_or_default(),
+                    epoch: FAR_FUTURE_EPOCH,
+                },
+                (None, Some(_)) => return Err(format!("{name}_FORK_VERSION missing")),
+            };
+            forks.push(fork);
+        }
+        let name = kv
+            .get("CONFIG_NAME")
+            .cloned()
+            .unwrap_or_else(|| "config".into());
+        let net = Network {
+            name,
+            genesis_validators_root,
+            genesis_fork_version: genesis,
+            capella_fork_version: forks[ForkName::Capella as usize].version,
+            forks,
+        };
+        net.validate_schedule()?;
+
+        // A fork after Gloas would change the signing rules in ways this
+        // signer does not know about.
+        for (k, v) in &kv {
+            if let Some(fork) = k.strip_suffix("_FORK_EPOCH")
+                && ForkName::parse(fork).is_none()
+                && v.parse::<u64>().is_ok_and(|e| e != FAR_FUTURE_EPOCH)
+            {
+                return Err(format!("{k} schedules a fork this signer does not support"));
+            }
+        }
+        Ok(net)
+    }
+
+    fn validate_schedule(&self) -> Result<(), String> {
+        let mut last = 0;
+        let mut unscheduled: Option<ForkName> = None;
+        for f in &self.forks {
+            if f.epoch == FAR_FUTURE_EPOCH {
+                unscheduled.get_or_insert(f.name);
+                continue;
+            }
+            if let Some(u) = unscheduled {
+                return Err(format!(
+                    "{} is scheduled but the earlier {u} is not",
+                    f.name
+                ));
+            }
+            if f.epoch < last {
+                return Err(format!(
+                    "{} fork epoch {} is before the previous fork",
+                    f.name, f.epoch
+                ));
+            }
+            last = f.epoch;
+        }
+        if self.forks.first().map(|f| f.epoch) != Some(0) {
+            return Err("genesis fork must be at epoch 0".into());
+        }
+        Ok(())
+    }
+}
+
+/// (version, epoch) per fork from Altair to Gloas.
+type Schedule = [([u8; 4], u64); 7];
+
+fn net(name: &str, gvr: &str, genesis: [u8; 4], schedule: Schedule) -> Network {
+    let mut root = [0u8; 32];
+    hex::decode_to_slice(gvr, &mut root).expect("static genesis validators root");
+    let mut forks = vec![ScheduledFork {
+        name: ForkName::Phase0,
+        version: genesis,
+        epoch: 0,
+    }];
+    for (name, (version, epoch)) in ForkName::ALL[1..].iter().zip(schedule) {
+        forks.push(ScheduledFork {
+            name: *name,
+            version,
+            epoch,
+        });
+    }
+    let n = Network {
+        name: name.to_string(),
+        genesis_validators_root: root,
+        genesis_fork_version: genesis,
+        capella_fork_version: forks[ForkName::Capella as usize].version,
+        forks,
+    };
+    n.validate_schedule().expect("static schedule");
+    n
+}
+
+impl Network {
+    /// Fork schedules from eth-clients/{hoodi,sepolia} metadata/config.yaml
+    /// and consensus-specs configs/mainnet.yaml (2026-11).
     pub fn presets() -> Vec<Network> {
+        const FAR: u64 = FAR_FUTURE_EPOCH;
         vec![
             net(
                 "mainnet",
                 "4b363db94e286120d76eb905340fdd4e54bfe9f06bf33ff6cf5ad27f511bfe95",
                 [0x00, 0x00, 0x00, 0x00],
-                [0x03, 0x00, 0x00, 0x00],
+                [
+                    ([0x01, 0, 0, 0], 74240),
+                    ([0x02, 0, 0, 0], 144896),
+                    ([0x03, 0, 0, 0], 194048),
+                    ([0x04, 0, 0, 0], 269568),
+                    ([0x05, 0, 0, 0], 364032),
+                    ([0x06, 0, 0, 0], 411392),
+                    ([0x07, 0, 0, 0], FAR),
+                ],
             ),
             net(
                 "hoodi",
                 "212f13fc4df078b6cb7db228f1c8307566dcecf900867401a92023d7ba99cb5f",
                 [0x10, 0x00, 0x09, 0x10],
-                [0x40, 0x00, 0x09, 0x10],
+                [
+                    ([0x20, 0x00, 0x09, 0x10], 0),
+                    ([0x30, 0x00, 0x09, 0x10], 0),
+                    ([0x40, 0x00, 0x09, 0x10], 0),
+                    ([0x50, 0x00, 0x09, 0x10], 0),
+                    ([0x60, 0x00, 0x09, 0x10], 2048),
+                    ([0x70, 0x00, 0x09, 0x10], 50688),
+                    // Unscheduled again on 2026-10-22; version as announced.
+                    ([0x80, 0x00, 0x09, 0x10], FAR),
+                ],
             ),
             net(
                 "sepolia",
                 "d8ea171f3c94aea21ebc42a1ed61052acf3f9209c00e4efbaaddac09ed9b8078",
                 [0x90, 0x00, 0x00, 0x69],
-                [0x90, 0x00, 0x00, 0x72],
+                [
+                    ([0x90, 0x00, 0x00, 0x70], 50),
+                    ([0x90, 0x00, 0x00, 0x71], 100),
+                    ([0x90, 0x00, 0x00, 0x72], 56832),
+                    ([0x90, 0x00, 0x00, 0x73], 132608),
+                    ([0x90, 0x00, 0x00, 0x74], 222464),
+                    ([0x90, 0x00, 0x00, 0x75], 272640),
+                    ([0x90, 0x00, 0x00, 0x76], 353024),
+                ],
             ),
         ]
     }
 }
 
+pub fn parse_root(s: &str) -> Result<Root, String> {
+    let mut root = [0u8; 32];
+    hex::decode_to_slice(s.trim_start_matches("0x"), &mut root)
+        .map_err(|e| format!("genesis validators root: {e}"))?;
+    Ok(root)
+}
+
 /// `--network` accepts a preset name or
 /// `custom:<genesis_validators_root>:<genesis_fork_version>:<capella_fork_version>`.
+/// A `custom:` network has no fork schedule; pass a config.yaml as `--network` for one.
 impl FromStr for Network {
     type Err = String;
 
@@ -66,13 +333,12 @@ impl FromStr for Network {
         if parts.len() == 4 && parts[0] == "custom" {
             let mut n = Network {
                 name: "custom".into(),
-                genesis_validators_root: [0; 32],
+                genesis_validators_root: parse_root(parts[1])?,
                 genesis_fork_version: [0; 4],
                 capella_fork_version: [0; 4],
+                forks: Vec::new(),
             };
             let strip = |p: &str| p.trim_start_matches("0x").to_string();
-            hex::decode_to_slice(strip(parts[1]), &mut n.genesis_validators_root)
-                .map_err(|e| format!("genesis validators root: {e}"))?;
             hex::decode_to_slice(strip(parts[2]), &mut n.genesis_fork_version)
                 .map_err(|e| format!("genesis fork version: {e}"))?;
             hex::decode_to_slice(strip(parts[3]), &mut n.capella_fork_version)
@@ -86,5 +352,87 @@ impl FromStr for Network {
                 .map(|n| n.name.clone())
                 .collect::<Vec<_>>()
         ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn preset_schedules() {
+        let hoodi: Network = "hoodi".parse().unwrap();
+        assert_eq!(hoodi.fork_at_epoch(2047).unwrap().name, ForkName::Deneb);
+        assert_eq!(hoodi.fork_at_epoch(2048).unwrap().name, ForkName::Electra);
+        assert_eq!(
+            hoodi.fork_at_epoch(u64::MAX - 1).unwrap().name,
+            ForkName::Fulu
+        );
+        let sepolia: Network = "sepolia".parse().unwrap();
+        assert_eq!(sepolia.fork_at_epoch(353024).unwrap().name, ForkName::Gloas);
+        assert_eq!(
+            sepolia.fork_at_slot(353024 * 32 - 1).unwrap().name,
+            ForkName::Fulu
+        );
+        let custom: Network = format!("custom:0x{}:0x10000910:0x40000910", "11".repeat(32))
+            .parse()
+            .unwrap();
+        assert!(custom.fork_at_epoch(0).is_none());
+    }
+
+    const KURTOSIS_LIKE: &str = "\
+# Extends the mainnet preset
+PRESET_BASE: 'mainnet'
+CONFIG_NAME: testnet # needs to exist because of Prysm
+GENESIS_FORK_VERSION: 0x10000038
+ALTAIR_FORK_VERSION: 0x20000038
+ALTAIR_FORK_EPOCH: 0
+BELLATRIX_FORK_VERSION: 0x30000038
+BELLATRIX_FORK_EPOCH: 0
+CAPELLA_FORK_VERSION: 0x40000038
+CAPELLA_FORK_EPOCH: 0
+DENEB_FORK_VERSION: 0x50000038
+DENEB_FORK_EPOCH: 0
+ELECTRA_FORK_VERSION: 0x60000038
+ELECTRA_FORK_EPOCH: 0
+FULU_FORK_VERSION: 0x70000038
+FULU_FORK_EPOCH: 0
+GLOAS_FORK_VERSION: 0x80000038
+GLOAS_FORK_EPOCH: 2
+EIP7928_FORK_VERSION: 0xe7928038
+EIP7928_FORK_EPOCH: 18446744073709551615
+BLOB_SCHEDULE:
+  - EPOCH: 1
+    MAX_BLOBS_PER_BLOCK: 12
+";
+
+    #[test]
+    fn config_yaml() {
+        let n = Network::from_config_yaml(KURTOSIS_LIKE, [7; 32]).unwrap();
+        assert_eq!(n.name, "testnet");
+        assert_eq!(n.genesis_fork_version, [0x10, 0, 0, 0x38]);
+        assert_eq!(n.capella_fork_version, [0x40, 0, 0, 0x38]);
+        assert_eq!(n.fork_at_epoch(1).unwrap().name, ForkName::Fulu);
+        let g = n.fork_at_epoch(2).unwrap();
+        assert_eq!((g.name, g.version), (ForkName::Gloas, [0x80, 0, 0, 0x38]));
+
+        // Gloas absent: unscheduled.
+        let cfg: String = KURTOSIS_LIKE
+            .lines()
+            .filter(|l| !l.starts_with("GLOAS"))
+            .map(|l| format!("{l}\n"))
+            .collect();
+        let n = Network::from_config_yaml(&cfg, [7; 32]).unwrap();
+        assert_eq!(n.fork_at_epoch(u64::MAX - 1).unwrap().name, ForkName::Fulu);
+
+        let minimal = KURTOSIS_LIKE.replace("'mainnet'", "minimal");
+        assert!(Network::from_config_yaml(&minimal, [7; 32]).is_err());
+        let unknown_fork = KURTOSIS_LIKE.replace(
+            "EIP7928_FORK_EPOCH: 18446744073709551615",
+            "EIP7928_FORK_EPOCH: 5",
+        );
+        assert!(Network::from_config_yaml(&unknown_fork, [7; 32]).is_err());
+        let out_of_order = KURTOSIS_LIKE.replace("FULU_FORK_EPOCH: 0", "FULU_FORK_EPOCH: 3");
+        assert!(Network::from_config_yaml(&out_of_order, [7; 32]).is_err());
     }
 }
