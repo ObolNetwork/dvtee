@@ -195,7 +195,7 @@ and verifiers can see it:
 - runtime deposits (off by default; needed where the depositor is not known at key generation);
 - runtime fee recipient changes for builder registrations and Gloas proposer preferences (off: the fee
   recipient comes from the lock);
-- voluntary exits (on by default).
+- voluntary exits (on by default, for clients with the exit role only; ROADMAP design choice 9).
 
 Turning one of these on later takes a ceremony order of kind `settings`, signed by a threshold of
 operators. Following tee-signer's practice, a loosening change should only take effect after a delay, so

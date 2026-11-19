@@ -72,7 +72,10 @@ reviewed at the same time and are superseded by `signer/`.
   at its slot.
 * **Never signs a client-provided root.** Each root is recomputed from the typed object, and the domain
   is chosen by request type. A mismatching `signingRoot` is rejected. A signer that blind-signs roots is
-  a universal signing oracle, which would defeat the point of putting the key in a TEE.
+  a universal signing oracle, which would defeat the point of putting the key in a TEE. That includes a
+  generic "sign this root under this domain" call guarded by a list of forbidden (slashable) domains:
+  it still signs deposits, registrations and exits with any contents, and every domain a future fork
+  adds. sev-signer only signs request types it knows, and refuses the rest.
 * **Verified against an independent implementation.** Signing roots and signatures match go-eth2-client
   plus herumi BLS (`tests/vecgen`) byte for byte.
 * **Network pinning.** Requests whose `genesis_validators_root` differs from the configured network are
@@ -184,9 +187,9 @@ Cluster shape guidance that follows from this:
    * By default the fee recipient comes from the cluster lock, which every operator signed, and
      requests with another one are refused. Clusters that need runtime fee recipient changes or runtime
      deposits enable them at provisioning.
-   * Exits stay allowed by default (see Known gaps). Changing any of these later needs an order signed
-     by a threshold of operators, which matches charon's existing `feerecipient sign` flow; loosening
-     changes take effect after a delay.
+   * Exits are allowed, but only for clients with the exit role (design choice 9). Changing any of
+     these later needs an order signed by a threshold of operators, which matches charon's existing
+     `feerecipient sign` flow; loosening changes take effect after a delay.
 8. **Proposed: charon runs ceremonies; the guest does only what touches a share.** DKG, reshare and
    recover keep their networking and lock handling in charon. The guest checks a ceremony order signed
    by a threshold of operators, then deals, combines, and signs lock hashes, deposits and registrations
@@ -194,6 +197,18 @@ Cluster shape guidance that follows from this:
    a share. Design: [docs/cluster-edits.md](docs/cluster-edits.md).
 
 ### Phases
+
+9. **Proposed: client roles, denied unless granted.** Each pinned client certificate carries the
+   operations it may request, and anything not listed is refused, including request types added by a
+   future fork.
+   * The validator client's certificate gets duties: attestations, blocks, aggregation, sync committee,
+     RANDAO and, where enabled, registrations and proposer preferences.
+   * **Exits need a separate certificate with the exit role**, held by whoever signs exits (charon's
+     exit tooling, an operator's admin machine). A stolen validator-client certificate then can't exit
+     validators. This follows other TEE signers, which keep exits behind an admin role.
+   * Runtime deposits, where enabled at provisioning, get their own role too.
+   * Format: an optional third column in the `knownClients` file, e.g. `vc-node0 <sha256> duties` and
+     `ops <sha256> exit`. A line without one keeps today's behaviour during the transition.
 
 **Phase 1: a minimal guest that can be trusted (biggest gap)**
 
@@ -207,6 +222,9 @@ Cluster shape guidance that follows from this:
   TCB (snpguest `--tcb_version`), not the current TCB. That way firmware updates don't brick the disk
   and downgrades below the minimum can't unseal it. The signer side is done (`sev-signer sealing-key`,
   untested on hardware); the image still has to call it from the initrd.
+* **Fast restarts.** Once shares live on the sealed disk, the EIP-2335 password layer adds nothing
+  against disk theft. Store them in a form that loads without scrypt or PBKDF2, so a restart costs
+  seconds instead of a key-derivation pass per key (about 11 s for 8 keys in a debug build today).
 
 **Phase 2: attestation in the operator workflow**
 
@@ -259,7 +277,15 @@ Cluster shape guidance that follows from this:
   between them), the "never more than `k` epochs ahead" rule, and the start floor.
 * **Rollback after a reshare.** A restored disk can bring back a retired share. Tombstones and the share
   generation must be covered by the same protection as the watermarks.
-* Prometheus metrics and fuzzing of the request parsers.
+* **Metrics, off by default.** `--metrics-listen` serves Prometheus metrics: sign latency by request
+  kind, rejections, slashing refusals, watermark sync time, and the build commit and measurement.
+* **Grouped watermark writes, if the load test needs them.** Each signature's watermark is fsynced on
+  its own today. A burst of attestations at the start of a slot could then wait on disk syncs. Group
+  commit lets concurrent writes share one sync, while each signature is still released only after its
+  own watermark is durable. Size it with the load test: with consolidated (0x02) validators a signer
+  sees on the order of 30 attestations a slot at the high end, more for clusters with many 0x01
+  validators.
+* Fuzzing of the request parsers.
 
 **Phase 4: Intel and Arm**
 
@@ -307,8 +333,8 @@ The honest state today. None of these are hidden; most are planned in the phases
 | Anti-rollback | None. A restored disk snapshot rolls back slashing watermarks. The proposed start floor is design choice 5. |
 | Cluster edits | Not implemented. Recover, the reshare family with guests, ceremony orders and tombstones are designed in [docs/cluster-edits.md](docs/cluster-edits.md). Watermarks are stored per share pubkey, so a reshare would start them empty until they are keyed by validator. |
 | Forks | Gloas types implemented against consensus-specs v1.7.0-beta.4 and remote-signing-api v1.4.0, and checked against the spec tests, go-eth2-client and Web3Signer's examples, but not yet run against validator clients on a Gloas devnet. The domains of the four new types have only go-eth2-client as an outside check. Gloas is still changing upstream, so each spec release needs re-checking. |
-| Exits | By design, not a gap: `VOLUNTARY_EXIT` is permitted for any authorised client and is not rate limited. In a DV each signer holds one share, so an exit needs a threshold of operators to sign. Exits authorised by a party other than the operators are an open design item. |
-| Operations | No metrics or request-parser fuzzing. |
+| Exits | `VOLUNTARY_EXIT` is permitted for any authorised client today and is not rate limited. In a DV each signer holds one share, so an exit needs a threshold of operators to sign. Restricting exits to clients with an exit role is planned (design choice 9). Exits authorised by a party other than the operators are an open design item. |
+| Operations | No metrics (planned, opt-in) or request-parser fuzzing. |
 | Client auth | Pinned-cert mTLS on the signing listener, plus an optional public listener for health and evidence. A token as a second factor is planned (Phase 2). Lodestar, Prysm and Nimbus can't present a client certificate, and Lodestar can't send a token either. |
 | Key import | Keystores and password files are read from a directory. Encrypted import over the keymanager API, or DKG inside the guest, is planned (design choice 1). |
 | Pinned settings | `VALIDATOR_REGISTRATION` signs any fee recipient, and exits and deposits are startup flags. Pinned, operator-confirmed settings are planned (design choice 7). |
