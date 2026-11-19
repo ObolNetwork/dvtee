@@ -878,7 +878,7 @@ fn require_gloas(net: &Network, version: &str, slot: u64) -> Result<(), PrepareE
             f.name
         ))),
         None => Err(PrepareError::Invalid(
-            "Gloas request types need a network with a fork schedule (a preset or --network-config)"
+            "Gloas request types need a network with a fork schedule (a preset or a config.yaml --network)"
                 .into(),
         )),
     }

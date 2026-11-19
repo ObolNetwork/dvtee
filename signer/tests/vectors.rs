@@ -44,7 +44,7 @@ fn hoodi() -> Network {
     "hoodi".parse().unwrap()
 }
 
-/// Hoodi plus Gloas at epoch 60000, loaded through `--network-config`'s parser.
+/// Hoodi plus Gloas at epoch 60000, loaded through the config.yaml `--network` parser.
 fn hoodi_gloas() -> Network {
     let cfg = std::fs::read_to_string(dir().join("gloas-config.yaml")).unwrap();
     Network::from_config_yaml(&cfg, hoodi().genesis_validators_root).unwrap()

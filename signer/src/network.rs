@@ -321,7 +321,7 @@ pub fn parse_root(s: &str) -> Result<Root, String> {
 
 /// `--network` accepts a preset name or
 /// `custom:<genesis_validators_root>:<genesis_fork_version>:<capella_fork_version>`.
-/// A `custom:` network has no fork schedule; use `--network-config` for one.
+/// A `custom:` network has no fork schedule; pass a config.yaml as `--network` for one.
 impl FromStr for Network {
     type Err = String;
 

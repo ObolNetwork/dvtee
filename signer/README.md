@@ -34,8 +34,11 @@ the request.
 
 * **`--network mainnet|hoodi|sepolia`.** These presets carry every fork version and epoch up to Gloas.
   Gloas is not scheduled on mainnet or Hoodi. It is scheduled on Sepolia at epoch 353024.
-* **`--network-config <config.yaml> --genesis-validators-root <hex>`.** This takes the schedule from a
-  standard consensus `config.yaml`, such as a Kurtosis devnet's `network-configs/config.yaml`. Use it
+* **`--network <path/to/config.yaml> --genesis-validators-root <hex>`.** As with Web3Signer's and
+  Teku's `--network`, a value that is a path (it contains `/` or ends in `.yaml`) is read as a standard
+  consensus `config.yaml`, such as a Kurtosis devnet's `network-configs/config.yaml`. The config file
+  has no genesis validators root, so it is passed separately (Web3Signer learns it from the first
+  request instead; sev-signer pins it). URLs are not fetched. Use it
   for devnets, and for a public network whose schedule changed after this build. Only flat
   `KEY: value` lines are read. The config is refused if `PRESET_BASE` is not `mainnet`, if the
   schedule is inconsistent, or if it schedules a fork after Gloas.

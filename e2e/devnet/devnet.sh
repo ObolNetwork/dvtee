@@ -112,7 +112,7 @@ GFV=$(cfg GENESIS_FORK_VERSION)
 CFV=$(cfg CAPELLA_FORK_VERSION)
 CHAIN_ID=$(cfg DEPOSIT_CHAIN_ID)
 EOF
-  # sev-signer takes its fork schedule from this file (--network-config).
+  # sev-signer takes its fork schedule from this file (--network <config.yaml>).
   local ge; ge=$(cfg GLOAS_FORK_EPOCH)
   [[ ${ge:-18446744073709551615} == "$GLOAS_EPOCH" ]] || die "genesis config.yaml has GLOAS_FORK_EPOCH $ge, want $GLOAS_EPOCH"
   cat "$W/env" >&2
@@ -184,7 +184,7 @@ signer_up() {
     -v "$SEV_SIGNER:/usr/local/bin/sev-signer:ro" -v "$W/cluster/node$i/validator_keys:/keys:ro" \
     -v "$W/run/node$i:/node" -v "$W/genesis:/genesis:ro" "$TOOLS" \
     sev-signer serve --platform insecure-dev --insecure-dev-root-key /node/dev-root.key \
-    --network-config /genesis/config.yaml --genesis-validators-root "$GVR" \
+    --network /genesis/config.yaml --genesis-validators-root "$GVR" \
     --keystores-dir /keys --data-dir /node/signer-data \
     --listen 127.0.0.1:9000 --public-listen 0.0.0.0:9001 "${mtls[@]}" >/dev/null
 }

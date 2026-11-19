@@ -69,7 +69,7 @@ To keep the devnet up while you investigate, run the steps one at a time:
 | `LIGHTHOUSE`, `TEKU`, `LODESTAR`, `PRYSM` | the versions above | DV validator client images |
 
 Each sev-signer reads the devnet's fork schedule from the genesis `config.yaml`. It is started with
-`--network-config /genesis/config.yaml --genesis-validators-root <gvr>`. `up` checks that the config's
+`--network /genesis/config.yaml --genesis-validators-root <gvr>`. `up` checks that the config's
 `GLOAS_FORK_EPOCH` equals `GLOAS_EPOCH`.
 
 ## Gloas

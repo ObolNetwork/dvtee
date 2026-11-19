@@ -76,49 +76,42 @@ enum Cmd {
 
 #[derive(clap::Args)]
 struct NetworkArgs {
-    /// mainnet, hoodi, sepolia, or custom:<gvr>:<genesis_fork>:<capella_fork>
-    /// (no fork schedule: Gloas request types are refused).
-    #[arg(
-        long,
-        env = "SEV_SIGNER_NETWORK",
-        required_unless_present = "network_config",
-        conflicts_with = "network_config"
-    )]
-    network: Option<Network>,
-    /// Consensus-layer config.yaml (e.g. a devnet's network-configs/config.yaml)
-    /// with the fork schedule. Requires --genesis-validators-root.
-    #[arg(
-        long,
-        env = "SEV_SIGNER_NETWORK_CONFIG",
-        requires = "genesis_validators_root"
-    )]
-    network_config: Option<PathBuf>,
-    /// Genesis validators root for --network-config, hex.
-    #[arg(
-        long,
-        env = "SEV_SIGNER_GENESIS_VALIDATORS_ROOT",
-        requires = "network_config"
-    )]
+    /// Network to sign for, as Web3Signer and Teku take it: a preset name
+    /// (mainnet, hoodi, sepolia) or the path of a consensus config.yaml with
+    /// the fork schedule (e.g. a devnet's network-configs/config.yaml). A
+    /// config file needs --genesis-validators-root. The older
+    /// custom:<gvr>:<genesis_fork>:<capella_fork> form still works but has no
+    /// fork schedule, so Gloas request types are refused on it.
+    #[arg(long, env = "SEV_SIGNER_NETWORK", value_name = "NAME|CONFIG.YAML")]
+    network: String,
+    /// Genesis validators root, hex. Required with a config.yaml --network,
+    /// because the config file doesn't contain it.
+    #[arg(long, env = "SEV_SIGNER_GENESIS_VALIDATORS_ROOT")]
     genesis_validators_root: Option<String>,
 }
 
 impl NetworkArgs {
     fn resolve(&self) -> anyhow::Result<Network> {
-        match (
-            &self.network,
-            &self.network_config,
-            &self.genesis_validators_root,
-        ) {
-            (Some(n), None, None) => Ok(n.clone()),
-            (None, Some(path), Some(gvr)) => {
-                let gvr = network::parse_root(gvr).map_err(anyhow::Error::msg)?;
-                let cfg = std::fs::read_to_string(path)
-                    .with_context(|| format!("reading {}", path.display()))?;
-                Network::from_config_yaml(&cfg, gvr)
-                    .map_err(|e| anyhow::anyhow!("{}: {e}", path.display()))
+        let is_file = self.network.contains(std::path::MAIN_SEPARATOR)
+            || self.network.contains('/')
+            || self.network.ends_with(".yaml")
+            || self.network.ends_with(".yml");
+        if !is_file {
+            if self.genesis_validators_root.is_some() {
+                bail!("--genesis-validators-root is only used with a config.yaml --network");
             }
-            _ => bail!("use either --network or --network-config with --genesis-validators-root"),
+            return self.network.parse::<Network>().map_err(anyhow::Error::msg);
         }
+        let Some(gvr) = &self.genesis_validators_root else {
+            bail!(
+                "--network {} is a config file; it needs --genesis-validators-root",
+                self.network
+            );
+        };
+        let gvr = network::parse_root(gvr).map_err(anyhow::Error::msg)?;
+        let cfg = std::fs::read_to_string(&self.network)
+            .with_context(|| format!("reading {}", self.network))?;
+        Network::from_config_yaml(&cfg, gvr).map_err(|e| anyhow::anyhow!("{}: {e}", self.network))
     }
 }
 

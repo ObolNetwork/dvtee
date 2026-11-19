@@ -65,7 +65,7 @@ reviewed at the same time and are superseded by `signer/`.
   PAYLOAD_ATTESTATION_MESSAGE, PROPOSER_PREFERENCES, EXECUTION_PAYLOAD_ENVELOPE (self-built blocks
   only, and only for a block this signer signed) and BUILDER_REQUEST_AUTH. EXECUTION_PAYLOAD_BID is
   refused: it is a builder's message.
-* **Fork schedule.** Presets carry each fork's version and epoch, and `--network-config` loads a
+* **Fork schedule.** Presets carry each fork's version and epoch, and `--network` also takes a
   standard consensus `config.yaml` (devnets). A request's fork version and schema must match the fork
   at its slot.
 * **Never signs a client-provided root.** Each root is recomputed from the typed object, and the domain
