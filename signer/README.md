@@ -53,7 +53,8 @@ Rejected requests (4xx) are logged at `warn` with the reason. Request bodies are
 ## Validator clients
 
 Tested on a Kurtosis devnet (Electra and Fulu at genesis, 32-slot epochs) with each client signing
-through its own sev-signer as one operator of a 3-of-4 charon cluster:
+through its own sev-signer as one operator of a 3-of-4 charon cluster. The harness is
+[`e2e/devnet/`](../e2e/devnet/README.md).
 
 | Client | Version | Works | Pinned server cert | mTLS client cert | Credentials in URL (`https://x:token@…`) |
 |---|---|---|---|---|---|
@@ -63,11 +64,11 @@ through its own sev-signer as one operator of a 3-of-4 charon cluster:
 | Prysm | v7.3.1 | yes | `SSL_CERT_FILE` | none | Basic, sent on every request |
 | Nimbus | v26.10.2 | no | none: ignores IP SANs, and has no CA option | none | Basic, sent on every request |
 
-Each client signed attestations, blocks, RANDAO reveals, aggregation selection proofs and all sync
-committee kinds; Lighthouse also signed builder registrations. Charon verified every partial
-signature it received. Lodestar and Prysm aggregates (`AGGREGATE_AND_PROOF_V2`) were signed in that
-run; Lighthouse and Teku aggregates (v1 type with an Electra body) were rejected then and are fixed
-since, covered by a test vector.
+Each client signed attestations, blocks, RANDAO reveals, aggregation selection proofs, aggregates
+and all sync committee kinds; Lighthouse also signed builder registrations. Lighthouse and Teku send
+aggregates as the v1 `AGGREGATE_AND_PROOF` type, Lodestar and Prysm as `AGGREGATE_AND_PROOF_V2`.
+Charon verified every partial signature it received, and threshold aggregates combining v1 and v2
+partials were accepted on chain.
 
 ## Verifying a signer
 
