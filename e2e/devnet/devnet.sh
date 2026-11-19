@@ -33,6 +33,11 @@
 #   WORKDIR             state and logs (default: ./devnet-work)
 #   SLOTS               slots for `wait` (default: 160, i.e. 5 epochs)
 #   CHARON_DEBUG_NODES  node indices whose charon logs at debug, e.g. "1" (default: none)
+#   GLOAS_EPOCH         Gloas fork epoch (default: 18446744073709551615, not scheduled). Every client
+#                       image must support Gloas when it is scheduled; see README.md.
+#   EL_IMAGE, CL_IMAGE  Kurtosis geth and Lighthouse BN/VC images (default: those in kurtosis-args.yaml)
+#   LIGHTHOUSE, TEKU, LODESTAR, PRYSM
+#                       DV validator client images (defaults below)
 set -euo pipefail
 
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
@@ -46,14 +51,18 @@ ENCLAVE=${ENCLAVE:-sev-signer-devnet}
 W=$(mkdir -p "${WORKDIR:-$PWD/devnet-work}" && realpath "${WORKDIR:-$PWD/devnet-work}")
 SLOTS=${SLOTS:-160}
 CHARON_DEBUG_NODES=${CHARON_DEBUG_NODES:-}
+GLOAS_EPOCH=${GLOAS_EPOCH:-18446744073709551615}
+[[ $GLOAS_EPOCH =~ ^[0-9]+$ ]] || { echo "GLOAS_EPOCH must be an epoch number" >&2; exit 1; }
+EL_IMAGE=${EL_IMAGE:-}
+CL_IMAGE=${CL_IMAGE:-}
 
 P=$ENCLAVE
 NET=kt-$ENCLAVE
 TOOLS=sev-signer-devnet-tools
-LIGHTHOUSE=sigp/lighthouse:v8.3.3
-TEKU=consensys/teku:26.10.3
-LODESTAR=chainsafe/lodestar:v1.50.1
-PRYSM=offchainlabs/prysm-validator:v7.3.1
+LIGHTHOUSE=${LIGHTHOUSE:-sigp/lighthouse:v8.3.3}
+TEKU=${TEKU:-consensys/teku:26.10.3}
+LODESTAR=${LODESTAR:-chainsafe/lodestar:v1.50.1}
+PRYSM=${PRYSM:-offchainlabs/prysm-validator:v7.3.1}
 VALTOOLS=protolambda/eth2-val-tools:latest
 DV_FIRST=56 DV_END=64 # genesis key range split into the DV (Kurtosis VC loads 0..55)
 FEE=0x000000000000000000000000000000000000dEaD
@@ -69,10 +78,20 @@ head_slot() { bn /eth/v1/beacon/headers/head | jq -r .data.header.message.slot; 
 cfg() { awk -v k="$1:" '$1 == k {gsub(/["\047]/, "", $2); print $2}' "$W/genesis/config.yaml"; }
 strip() { sed 's/\x1b\[[0-9;]*m//g'; }
 
+# kurtosis-args.yaml with GLOAS_EPOCH and any image overrides applied.
+kurtosis_args() {
+  local sed_args=(-e "s/^\( *gloas_fork_epoch:\).*/\1 $GLOAS_EPOCH/")
+  [[ -n $EL_IMAGE ]] && sed_args+=(-e "s|^\( *el_image:\).*|\1 $EL_IMAGE|")
+  [[ -n $CL_IMAGE ]] && sed_args+=(-e "s|^\( *cl_image:\).*|\1 $CL_IMAGE|" -e "s|^\( *vc_image:\).*|\1 $CL_IMAGE|")
+  sed "${sed_args[@]}" "$HERE/kurtosis-args.yaml" >"$W/kurtosis-args.yaml"
+  grep -q "^ *gloas_fork_epoch: $GLOAS_EPOCH\$" "$W/kurtosis-args.yaml" || die "gloas_fork_epoch not templated"
+}
+
 up() {
   docker build -q -t "$TOOLS" "$HERE" >/dev/null
-  log "kurtosis run $ETH_PKG (enclave $ENCLAVE)"
-  "$KURTOSIS" run --enclave "$ENCLAVE" "$ETH_PKG" --args-file "$HERE/kurtosis-args.yaml" >"$W/kurtosis-run.log" 2>&1 \
+  kurtosis_args
+  log "kurtosis run $ETH_PKG (enclave $ENCLAVE, gloas_fork_epoch $GLOAS_EPOCH)"
+  "$KURTOSIS" run --enclave "$ENCLAVE" "$ETH_PKG" --args-file "$W/kurtosis-args.yaml" >"$W/kurtosis-run.log" 2>&1 \
     || { tail -n 30 "$W/kurtosis-run.log" | strip >&2; die "kurtosis run failed (see $W/kurtosis-run.log)"; }
   rm -rf "$W/genesis"
   "$KURTOSIS" files download "$ENCLAVE" el_cl_genesis_data "$W/genesis" >/dev/null
@@ -93,6 +112,9 @@ GFV=$(cfg GENESIS_FORK_VERSION)
 CFV=$(cfg CAPELLA_FORK_VERSION)
 CHAIN_ID=$(cfg DEPOSIT_CHAIN_ID)
 EOF
+  # sev-signer takes its fork schedule from this file (--network-config).
+  local ge; ge=$(cfg GLOAS_FORK_EPOCH)
+  [[ ${ge:-18446744073709551615} == "$GLOAS_EPOCH" ]] || die "genesis config.yaml has GLOAS_FORK_EPOCH $ge, want $GLOAS_EPOCH"
   cat "$W/env" >&2
 }
 
@@ -160,9 +182,10 @@ signer_up() {
   docker run -d --name "$P-signer$i" --network "container:$P-charon$i" --memory 256m "${U[@]}" "${LOGOPT[@]}" \
     -e RUST_LOG=sev_signer=debug,tower_http=info \
     -v "$SEV_SIGNER:/usr/local/bin/sev-signer:ro" -v "$W/cluster/node$i/validator_keys:/keys:ro" \
-    -v "$W/run/node$i:/node" "$TOOLS" \
+    -v "$W/run/node$i:/node" -v "$W/genesis:/genesis:ro" "$TOOLS" \
     sev-signer serve --platform insecure-dev --insecure-dev-root-key /node/dev-root.key \
-    --network "custom:$GVR:$GFV:$CFV" --keystores-dir /keys --data-dir /node/signer-data \
+    --network-config /genesis/config.yaml --genesis-validators-root "$GVR" \
+    --keystores-dir /keys --data-dir /node/signer-data \
     --listen 127.0.0.1:9000 --public-listen 0.0.0.0:9001 "${mtls[@]}" >/dev/null
 }
 

@@ -14,7 +14,8 @@ relay ─┬─ pod0: charon0 + sev-signer0 + Lighthouse VC  (mTLS)
        └─ pod3: charon3 + sev-signer3 + Prysm VC       (server TLS only)
 ```
 
-- **Chain:** mainnet preset, 12 s slots, Electra and Fulu at genesis, and 64 genesis validators.
+- **Chain:** mainnet preset, 12 s slots, Electra and Fulu at genesis, and 64 genesis validators. Gloas
+  is not scheduled unless `GLOAS_EPOCH` is set (see [Gloas](#gloas)).
 - **DV keys:** genesis keys 56–63, derived from the genesis mnemonic and split 3-of-4. No Kurtosis VC
   holds them.
 - **Pods:** each pod's containers share one network namespace, so the VC reaches charon at
@@ -63,6 +64,40 @@ To keep the devnet up while you investigate, run the steps one at a time:
 | `WORKDIR` | `./devnet-work` | |
 | `SLOTS` | `160` | slots for `wait` |
 | `CHARON_DEBUG_NODES` | none | e.g. `1` to run charon1 at debug level |
+| `GLOAS_EPOCH` | `18446744073709551615` (not scheduled) | Gloas fork epoch, written into the enclave's `kurtosis-args.yaml` |
+| `EL_IMAGE`, `CL_IMAGE` | from `kurtosis-args.yaml` | Kurtosis geth, and Lighthouse BN and VC images |
+| `LIGHTHOUSE`, `TEKU`, `LODESTAR`, `PRYSM` | the versions above | DV validator client images |
+
+Each sev-signer reads the devnet's fork schedule from the genesis `config.yaml`. It is started with
+`--network-config /genesis/config.yaml --genesis-validators-root <gvr>`. `up` checks that the config's
+`GLOAS_FORK_EPOCH` equals `GLOAS_EPOCH`.
+
+## Gloas
+
+Run with `GLOAS_EPOCH=<n>` (for example `2`, so the DV runs a few epochs in Fulu first). The pinned
+images predate Gloas, so every component on the signing path needs a Gloas-capable build. TODO: fill
+in the versions once they are tested.
+
+| Component | Variable | Image (TODO) |
+|---|---|---|
+| Execution client (geth, Amsterdam) | `EL_IMAGE` | TODO |
+| Lighthouse BN and Kurtosis VC | `CL_IMAGE` | TODO |
+| ethereum-package with `gloas_fork_epoch` support | `ETH_PKG` | TODO (check 6.1.0-obol.6) |
+| charon, Gloas duties | `CHARON` | TODO |
+| Lighthouse VC (pod0) | `LIGHTHOUSE` | TODO |
+| Teku VC (pod1) | `TEKU` | TODO |
+| Lodestar VC (pod2) | `LODESTAR` | TODO |
+| Prysm VC (pod3) | `PRYSM` | TODO |
+
+What to look for after the fork:
+- The new kinds should appear in `summary`:
+  - `PAYLOAD_ATTESTATION_MESSAGE` from PTC members;
+  - `EXECUTION_PAYLOAD_ENVELOPE` after each DV proposal (self-build);
+  - `PROPOSER_PREFERENCES`, if the VC sends them;
+  - Gloas `AGGREGATE_AND_PROOF(_V2)`.
+- Any `rejected` line means a request shape or version that the signer and that VC disagree on.
+- A `refused` (412) envelope means the VC asked for an envelope for a block this signer did not sign.
+- A VC that sends `EXECUTION_PAYLOAD_BID` gets 403 by design.
 
 ## What it reports
 
