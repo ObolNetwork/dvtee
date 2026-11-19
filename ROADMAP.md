@@ -21,8 +21,10 @@ signers can compare designs. Nothing here has run on SEV-SNP hardware or been au
 * **The biggest remaining gap is the guest image, not the signer.** The current Alpine image is unsafe
   as built (details below). Replace it with a reproducible mkosi image rather than patching it.
 * **It is meant to be one share in a DV cluster, not a solo signer.** The design leans on the cluster
-  for key generation (DKG inside the guest), recovery (reshare) and, later, anti-rollback. See
-  [Where it fits](#where-it-fits-one-diverse-share-in-a-cluster).
+  for key generation (DKG inside the guest), recovery and image upgrades (the other operators rebuild a
+  lost share; no key export), and anti-rollback. See
+  [Where it fits](#where-it-fits-one-diverse-share-in-a-cluster) and
+  [docs/cluster-edits.md](docs/cluster-edits.md).
 
 ## Findings
 
@@ -106,10 +108,10 @@ it, not unseal it. The two fail in different ways, which is the point of running
 | | Cloud-KMS-sealed TEE signers (typical) | sev-signer (target design) |
 |---|---|---|
 | Sealing root | Cloud KMS / Key Vault policy | SNP derived key (`MSG_KEY_REQ`) over measurement, policy and a minimum TCB |
-| Who else can unseal | The cloud vendor and its recovery processes | Nobody but AMD firmware; physical DIMM attacks are out of scope |
-| Key creation | Often a dealer outside the TEE, then import | Charon DKG pushes the share over attested TLS (plan A), or `charon dkg` runs inside the guest (plan B) |
-| Recovery | Re-import of shares kept outside the TEE, or a TEE-to-TEE handover | charon reshare or `replace-operator` |
-| Upgrade | New image key policy, then re-import or handover | Reshare into the new image's measurement |
+| Who else can unseal | With a locked key or release policy (AWS, Azure), not the operator's admins; the cloud's KMS and attestation services stay trusted. GCP's rule can't be locked. | Nobody but AMD firmware; physical DIMM attacks are out of scope |
+| Key creation | Often a dealer outside the TEE, then import | Charon DKG pushes the share over attested TLS (plan A), or the guest does DKG's share operations itself so the share never exists outside it (plan B) |
+| Recovery | Re-import of shares kept outside the TEE, or a TEE-to-TEE handover | `charon edit recover` (proposed): a threshold of operators rebuilds the lost share inside a new guest |
+| Upgrade | New image key policy, then re-import or handover | Recover the share into a guest running the new image; the old guest retires and exports nothing |
 | Hosting | AWS Nitro, Azure and GCP confidential VMs | Operator-controlled AMD SEV-SNP hardware first (owned or rented bare metal); cloud SNP guests that reach the chip directly (AWS EC2) as an option |
 | Attestation trust | Cloud-signed tokens or cloud PKI | The raw SNP report, checked against AMD's chain |
 
@@ -120,9 +122,17 @@ Cluster shape guidance that follows from this:
 * **Chip-family and vendor diversity.** No chip family, cloud or codebase should hold two shares. If
   another share runs on SNP in a cloud, run that one on Nitro or TDX instead, so one SNP firmware bug
   never hits two shares.
-* **Leave liveness headroom.** TEE signers have more ways to be down than a plain key (restarts,
-  attestation, re-provisioning). Size for n − t ≥ 2, so one signer can be mid-upgrade while another
-  fails.
+* **Two margins, because there is no backup.**
+  * **2t − n ≥ 2 (safety).** Any two quorums share at least two signers, so one duplicated or
+    rolled-back share (a clone, a restored disk, an old guest still running after a recover) can't
+    complete a slashable pair on its own. Charon's default thresholds meet this from n = 4; 2 of 3
+    does not.
+  * **n − t ≥ 2 (key survival and liveness).** Losing n − t + 1 signers before a recover loses the
+    validator key, because no copy exists outside the guests. With n − t ≥ 2 the cluster survives two
+    dead machines, or one mid-upgrade while another fails.
+  * Both hold from n = 6 (4 of 6, 5 of 7). A 3-of-4 cluster meets only the first. It is acceptable
+    when the withdrawal credentials can trigger an exit from the execution layer (EIP-7002), so losing
+    two machines costs an exit and a re-deposit, not the funds.
 
 ## Path to production for Obol DVs
 
@@ -138,13 +148,16 @@ Cluster shape guidance that follows from this:
      * That is a small extension on charon's side, and possibly in the keymanager API, if we want
        the share encrypted to a guest key rather than only protected by TLS.
      * Limit: the share still exists in charon's memory on the DKG host during the ceremony.
-   * **Plan B: `charon dkg` inside the guest.** The share is then generated inside and never exists
-     outside it. The PoC showed this flow. It costs running charon in the image during DKG and
-     reshares.
-2. **Recover by resharing, not by key export.** If a TEE node is lost (hardware failure, a TCB change
-   that alters the sealing key, or a cloud stop/start that lands the VM on a different chip), the cluster still signs at threshold, and `charon edit
-   replace-operator` / `recreate-private-keys` brings in a replacement. This makes strict sealing
-   acceptable: no export path is needed, so there is none to attack.
+   * **Plan B: the guest does DKG's share operations.** Charon runs the ceremony outside; the guest
+     deals and combines (design choice 8), so the share is generated inside and never exists outside
+     it. The PoC showed a heavier version of this flow, with all of charon inside the guest.
+2. **Recover by rebuilding, not by key export.** If a guest is lost (hardware failure, a TCB change
+   that alters the sealing key, a VM that lands on a different chip) or has to move to a new image, the
+   cluster keeps signing at threshold while a proposed `charon edit recover` has `t` other operators
+   rebuild the same share inside a new guest. The lock, public shares and every other operator's share
+   stay as they are. A reshare (`recreate-private-keys`, `replace-operator`) remains the tool for when a
+   share may have leaked or the operator set changes. Strict sealing is then acceptable: there is no
+   export path, so there is none to attack. Design: [docs/cluster-edits.md](docs/cluster-edits.md).
 3. **A compromised node holds only one share.** Below-threshold compromise cannot produce slashable
    signatures. What the TEE adds is protection for the share against a compromised host (theft,
    cloning, using the signer as an oracle), and in-TEE slashing protection.
@@ -152,24 +165,33 @@ Cluster shape guidance that follows from this:
    and verifies its peers' signer evidence at startup and on a timer, and exposes the result as a metric and a cluster health check.
    The cluster then knows how many of its shares are actually TEE-protected. No single-operator
    signer can offer that.
-5. **Proposed: the cluster as anti-rollback witness** (needs charon changes). A TEE cannot stop the
-   host from restoring an old disk snapshot, which rolls back slashing watermarks. In a DV, the other nodes know the latest duties the
-   cluster agreed on. After a restart, the signer would refuse to sign until its watermarks are at or
-   above what a threshold of peers report. Phase 3 builds on this. It needs no monotonic counter and
-   no extra infrastructure.
+5. **Proposed: a start floor against rollback.** A TEE cannot stop the host from restoring an old disk
+   snapshot, which rolls back slashing watermarks. The signer would never sign more than `k` epochs
+   ahead of a trusted clock, and after every start it would refuse all votes and proposals up to
+   `clock_epoch + k + 1`. Anything signed before the restart is then below the floor, whatever the disk
+   says. The cost is a few epochs of missed duties per restart for one signer, which the cluster covers.
+   The trusted clock can come from NTS or from signed timestamps of the other signers in the cluster.
+   See [State](docs/cluster-edits.md#state-watermarks-rollback-and-power-cycles).
 6. **Clones are a host capability to design for.** A host can boot two guests from the same image.
    Both pass attestation and, if sealing is to `MEASUREMENT | POLICY`, both derive the same disk key.
    Within one cluster a clone holds the same share, so it cannot reach threshold on its own. It can
-   still double-sign with that share, which the peer witness above and charon's consensus must catch.
-7. **Proposed: settings are pinned, not flags.**
-   * The fee recipient for builder registrations, and whether exits are allowed, are fixed when the
-     signer is provisioned. They are stored on the sealed disk.
-   * `VALIDATOR_REGISTRATION` is refused unless its fee recipient matches. The natural source is the
-     cluster lock, which every operator signed.
-   * Exits stay allowed by default (see Known gaps), but flipping that, or changing the fee
-     recipient, needs an explicit operator-signed configuration change, not a restart with a new flag.
-   * In a DV, a change then needs a threshold of operators to confirm it on their own signers, which
-     matches charon's existing `feerecipient sign` flow.
+   still double-sign with that share; with 2t − n ≥ 2 another honest signer must also sign both
+   messages, and its slashing protection refuses.
+7. **Proposed: settings are chosen at provisioning, not passed as flags.**
+   * The fee recipient for builder registrations (and Gloas proposer preferences), whether exits are
+     allowed, and whether runtime deposits are allowed are fixed when the signer is provisioned, stored
+     on the sealed disk, and their hash is included in the attestation evidence.
+   * By default the fee recipient comes from the cluster lock, which every operator signed, and
+     requests with another one are refused. Clusters that need runtime fee recipient changes or runtime
+     deposits enable them at provisioning.
+   * Exits stay allowed by default (see Known gaps). Changing any of these later needs an order signed
+     by a threshold of operators, which matches charon's existing `feerecipient sign` flow; loosening
+     changes take effect after a delay.
+8. **Proposed: charon runs ceremonies; the guest does only what touches a share.** DKG, reshare and
+   recover keep their networking and lock handling in charon. The guest checks a ceremony order signed
+   by a threshold of operators, then deals, combines, and signs lock hashes, deposits and registrations
+   it computes itself from the order's fields. It never signs a caller-supplied hash and never exports
+   a share. Design: [docs/cluster-edits.md](docs/cluster-edits.md).
 
 ### Phases
 
@@ -177,8 +199,8 @@ Cluster shape guidance that follows from this:
 
 * Build the image with **mkosi**: reproducible builds, a UKI, a dm-verity root via systemd-repart, and
   a data partition on LUKS2 with dm-integrity (AEAD).
-* No shell, no getty, no sshd and no passwords. The only network listener is sev-signer (plus charon
-  for DKG). Logs go out over the network or the serial console.
+* No shell, no getty, no sshd and no passwords. The only network listener is sev-signer; ceremonies
+  reach it through charon on the host. Logs go out over the network or the serial console.
 * Pin and build the kernel from source (OVMF: done, see `ovmf/`).
 * Publish expected launch measurements computed with `sev-snp-measure`.
 * Seal the data key with the SNP derived key using `MEASUREMENT | POLICY` and a pinned **minimum**
@@ -193,7 +215,14 @@ Cluster shape guidance that follows from this:
   `snpguest verify` / `sev` crate or ship a Go verifier.
 * Pin the attested TLS certificate in the validator client's web3signer configuration.
 * Have charon verify peers' signer evidence at startup and periodically, and expose it as a metric
-  (design choice 4).
+  (design choice 4). Ceremonies depend on this too: it is how operators check that a ceremony key really
+  belongs to a peer's guest.
+* **Cluster edits** ([docs/cluster-edits.md](docs/cluster-edits.md)):
+  * specify `recover` and the ceremony order format in distributed-validator-specs, with test vectors;
+  * implement `charon edit recover`;
+  * add the guest's ceremony operations (deal, combine, complaints, recover steps, tombstone) to
+    sev-signer's local API;
+  * key slashing watermarks by validator, and carry them over on reshare.
 * **Client authentication in depth: mTLS and a bearer token.**
   * **Why two secrets.** sev-signer pins client certificates, so a public CA failure can't forge a
     client. But a client key can still be weakly generated or leak; in October 2026 a public CA's
@@ -225,14 +254,11 @@ Cluster shape guidance that follows from this:
 
 **Phase 3: hardening the state**
 
-* **Anti-rollback for slashing protection.** The host can restore an old disk snapshot. Cheap
-  mitigations:
-  * refuse to sign until the signer has observed the chain head and set its watermarks to at least
-    `head_epoch - 1`. This works like doppelganger detection: it keys off a quorum of beacon nodes
-    or the charon cluster's view;
-  * use SNP SecureTSC (Genoa and later) for monotonic time.
-* **Defence in depth for the threshold.** Charon cluster consensus means only agreed duties reach
-  the signer. The signer could also refuse slot or epoch far from wall clock.
+* **Anti-rollback for slashing protection** (design choice 5): a trusted clock (NTS, or signed
+  timestamps from the cluster's other signers; SNP SecureTSC on Genoa and later for monotonic time
+  between them), the "never more than `k` epochs ahead" rule, and the start floor.
+* **Rollback after a reshare.** A restored disk can bring back a retired share. Tombstones and the share
+  generation must be covered by the same protection as the watermarks.
 * Prometheus metrics and fuzzing of the request parsers.
 
 **Phase 4: Intel and Arm**
@@ -240,8 +266,8 @@ Cluster shape guidance that follows from this:
 * The signer already uses configfs-tsm.
 * The image needs TDX-capable OVMF/TDVF builds and RTMR-based measurement.
 * **TDX has no sealing-key primitive.** Its data key must come from a key broker (attested KMS), or
-  from re-running DKG/reshare into each new TD. The DV reshare path above makes the second option
-  viable without new infrastructure.
+  the TD must get its share again after every restart, by DKG or recover. Recover makes the second
+  option viable without new infrastructure, at the cost of a ceremony per restart.
 
 ### Hosting
 
@@ -261,8 +287,8 @@ target. The aim is to take every third party out of key custody, not to be cloud
   leaves physical memory attacks (BadRAM, Battering RAM) out of scope.
 * **Host moves lose the sealed share.** A chip-derived key is unique to one physical CPU, so a
   stop/start or host migration lands the VM on a chip that can't unseal its data. In a DV cluster
-  that is a lost node: the cluster keeps signing at threshold, and `charon edit replace-operator` or a
-  reshare brings it back. Plan operations around it, and size clusters with n − t ≥ 2.
+  that is a lost node: the cluster keeps signing at threshold, and a recover rebuilds the share in a new
+  guest. Plan operations around it, and size clusters with n − t ≥ 2.
 * **To verify on real instances:** that EC2 SNP guests get `/dev/sev-guest` derived keys and the raw
   report, and what the launch measurement covers there (firmware only, or kernel, initramfs and
   command line too).
@@ -278,9 +304,10 @@ The honest state today. None of these are hidden; most are planned in the phases
 | Attestation verification | `verify-evidence` checks the binding, debug bit and measurement, but not the AMD chain (ARK → ASK → VCEK) or the report signature. |
 | Minimum TCB | `sealing-key` mixes a pinned minimum TCB into the SNP key. The verifier does not check it yet. |
 | Guest image | The 2024 Alpine image is unsafe for keys (see Findings). The mkosi image is not started. |
-| Anti-rollback | None. A restored disk snapshot rolls back slashing watermarks. |
+| Anti-rollback | None. A restored disk snapshot rolls back slashing watermarks. The proposed start floor is design choice 5. |
+| Cluster edits | Not implemented. Recover, the reshare family with guests, ceremony orders and tombstones are designed in [docs/cluster-edits.md](docs/cluster-edits.md). Watermarks are stored per share pubkey, so a reshare would start them empty until they are keyed by validator. |
 | Forks | Gloas types implemented against consensus-specs v1.7.0-beta.4 and remote-signing-api v1.4.0, and checked against the spec tests, go-eth2-client and Web3Signer's examples, but not yet run against validator clients on a Gloas devnet. The domains of the four new types have only go-eth2-client as an outside check. Gloas is still changing upstream, so each spec release needs re-checking. |
-| Exits | By design, not a gap: `VOLUNTARY_EXIT` is permitted for any authorised client and is not rate limited. In a DV each signer holds one share, so an exit needs a threshold of operators to sign. |
+| Exits | By design, not a gap: `VOLUNTARY_EXIT` is permitted for any authorised client and is not rate limited. In a DV each signer holds one share, so an exit needs a threshold of operators to sign. Exits authorised by a party other than the operators are an open design item. |
 | Operations | No metrics or request-parser fuzzing. |
 | Client auth | Pinned-cert mTLS on the signing listener, plus an optional public listener for health and evidence. A token as a second factor is planned (Phase 2). Lodestar, Prysm and Nimbus can't present a client certificate, and Lodestar can't send a token either. |
 | Key import | Keystores and password files are read from a directory. Encrypted import over the keymanager API, or DKG inside the guest, is planned (design choice 1). |
