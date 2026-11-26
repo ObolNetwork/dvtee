@@ -14,7 +14,8 @@ cargo build --release
   --data-dir /var/lib/sev-signer \
   --listen 0.0.0.0:9000 \
   --tls-san signer.internal \
-  --tls-known-clients knownClients.txt   # optional mTLS
+  --tls-known-clients knownClients.txt \ # optional mTLS, with roles
+  --cluster-lock /path/to/.charon/cluster-lock.json   # pins fee recipients
 ```
 
 * **TLS.** On first start the signer generates a TLS key and a self-signed certificate in
@@ -23,6 +24,32 @@ cargo build --release
 * **Public listener.** `--public-listen <addr>` adds a second TLS port with the same certificate and
   no client authentication. It serves only `/upcheck`, `/healthcheck` and `/api/v1/tee/attestation`,
   so peers and monitoring can fetch evidence while signing stays behind mTLS.
+* **Client roles.** `knownClients.txt` takes an optional third column with each certificate's roles,
+  comma-separated: `duties` (every validator duty, registrations and Gloas duties included), `exit`
+  (`VOLUNTARY_EXIT`) and `deposit` (`DEPOSIT`, which `--allow-deposits` must also enable). Anything
+  not granted gets 403. Give the validator client `duties`, and give `exit` to a separate certificate
+  held by whoever signs exits:
+  ```
+  vc-node0 59:E9:72:...:2F:DA duties
+  ops      0B:41:84:...:25:A8 exit
+  ```
+  A line without a third column (Web3Signer's format) gets `duties,exit`, as every client did before
+  roles; the signer logs a warning.
+* **Cluster lock.** `--cluster-lock` pins the signer to a charon cluster lock on first start. The
+  signer checks the lock's hashes and aggregate signature, requires every loaded key to be one of its
+  public shares at a single operator index, and stores the lock in `<data-dir>/cluster-lock.json`.
+  After that it refuses to start with any other lock. A new lock means new shares, so it needs a new
+  signer (a reshare or recover into a fresh guest), not a restart. While pinned:
+  * `VALIDATOR_REGISTRATION` must carry the lock's fee recipient and the share's validator pubkey;
+  * Gloas `PROPOSER_PREFERENCES` and self-built `EXECUTION_PAYLOAD_ENVELOPE`s must carry the lock's
+    fee recipient;
+  * gas limits are not pinned, and pre-Gloas blocks are signed as headers, so their fee recipient
+    can't be checked;
+  * charon's runtime fee recipient changes (proposer configuration) don't apply to a pinned signer:
+    their requests are refused.
+
+  The lock hash is bound into attestation evidence (see below). Lock versions v1.7.0 to v1.11.0 are
+  supported.
 * **Development without TLS.** `--insecure-http` serves plain HTTP. It disables attestation.
 * **Configuration from the environment.** Every flag also reads a `SEV_SIGNER_*` environment variable
   (see `--help`).
@@ -52,7 +79,7 @@ the request.
 | `POST` | `/api/v1/eth2/sign/{pubkey}` | Web3Signer request body. Returns `0x…` as text, or `{"signature"}` with `Accept: application/json`. Status codes: 400 invalid request, 403 blocked by policy, 404 unknown key, 412 slashing protection. |
 | `GET` | `/api/v1/eth2/publicKeys` | |
 | `GET` | `/upcheck`, `/healthcheck` | |
-| `GET` | `/api/v1/tee/attestation?nonce=<32-byte hex>` | Raw configfs-tsm evidence, plus the TLS certificate and pubkeys bound into REPORT_DATA. |
+| `GET` | `/api/v1/tee/attestation?nonce=<32-byte hex>` | Raw configfs-tsm evidence, plus the TLS certificate, pubkeys and pinned cluster lock hash bound into REPORT_DATA. |
 
 Supported request types:
 * `ATTESTATION`, `BLOCK_V2` (`block_header` only)
@@ -113,14 +140,16 @@ partials were accepted on chain.
 ```sh
 NONCE=$(openssl rand -hex 32)
 curl --cacert cert.pem "https://signer:9000/api/v1/tee/attestation?nonce=$NONCE" > evidence.json
-sev-signer verify-evidence --evidence evidence.json --nonce $NONCE --expected-measurement <hex>
+sev-signer verify-evidence --evidence evidence.json --nonce $NONCE --expected-measurement <hex> \
+  --expected-cluster-lock-hash $(jq -r .lock_hash cluster-lock.json)
 # then verify the report's hardware signature, e.g. for SEV-SNP:
 #   jq -r .report evidence.json | xxd -r -p > report.bin   (strip the 0x prefix first)
 #   snpguest fetch ca ...; snpguest fetch vcek ...; snpguest verify attestation ...
 ```
 
-`verify-evidence` checks three things:
-* the REPORT_DATA binding (nonce, TLS certificate and BLS keys);
+`verify-evidence` checks:
+* the REPORT_DATA binding (nonce, TLS certificate, BLS keys and, when pinned, the cluster lock hash);
+* with `--expected-cluster-lock-hash`, that the signer is pinned to your lock;
 * that the guest debug policy is off;
 * the launch measurement.
 

@@ -81,6 +81,12 @@ reviewed at the same time and are superseded by `signer/`.
 * **Network pinning.** Requests whose `genesis_validators_root` differs from the configured network are
   rejected (mainnet, hoodi, sepolia, or custom).
 * **Policy.** Exits are allowed by default; deposits are denied by default.
+* **Client roles.** A third `knownClients` column grants each client certificate `duties`, `exit` or
+  `deposit`; anything not granted is refused (design choice 9).
+* **Cluster lock pinning.** `--cluster-lock` pins the signer to a charon lock (v1.7.0 to v1.11.0) on
+  first start. It checks the lock's hashes and aggregate signature and that every loaded key is one of
+  its shares, then refuses any other lock. Registrations, proposer preferences and self-built payload
+  envelopes must carry the lock's fee recipient. The lock hash is bound into attestation evidence.
 * **Slashing protection.** Per-key low watermarks, fsynced before the signature is released. Supports
   EIP-3076 import at startup and `slashing-export`.
 * **Keystores.** Loads EIP-2335 keystores in charon's `validator_keys/` layout (scrypt and pbkdf2,
@@ -180,16 +186,22 @@ Cluster shape guidance that follows from this:
    Within one cluster a clone holds the same share, so it cannot reach threshold on its own. It can
    still double-sign with that share; with 2t − n ≥ 2 another honest signer must also sign both
    messages, and its slashing protection refuses.
-7. **Proposed: settings are chosen at provisioning, not passed as flags.**
-   * The fee recipient for builder registrations (and Gloas proposer preferences), whether exits are
-     allowed, and whether runtime deposits are allowed are fixed when the signer is provisioned, stored
-     on the sealed disk, and their hash is included in the attestation evidence.
-   * By default the fee recipient comes from the cluster lock, which every operator signed, and
-     requests with another one are refused. Clusters that need runtime fee recipient changes or runtime
-     deposits enable them at provisioning.
-   * Exits are allowed, but only for clients with the exit role (design choice 9). Changing any of
-     these later needs an order signed by a threshold of operators, which matches charon's existing
-     `feerecipient sign` flow; loosening changes take effect after a delay.
+7. **Settings come from the cluster lock, and change only with a new lock.** (Fee recipient and
+   exit role built; runtime deposits still a startup flag.)
+   * The fee recipient for builder registrations, Gloas proposer preferences and self-built Gloas
+     payloads comes from the cluster lock, which every operator signed. Requests with another one are
+     refused. Gas limits are not pinned.
+   * The signer pins the first lock it is given and refuses any other afterwards. Changing a fee
+     recipient means a new lock, and a new lock means new shares: a reshare into fresh guests. There is
+     deliberately no runtime path to change it, so charon's runtime proposer configuration does not
+     apply to a pinned signer.
+   * **Why the pin, not just the signatures.** The lock's aggregate signature has no proof of
+     possession, so a host that controls the lock file could build a fake lock around the signer's real
+     shares that still verifies. Checking the lock catches mistakes. The protection against a host is
+     the pin on the sealed disk plus the lock hash in the attestation evidence, which peers compare with
+     their own lock.
+   * Exits are allowed, but only for clients with the exit role (design choice 9). Runtime deposits
+     stay off unless enabled at provisioning.
 8. **Proposed: charon runs ceremonies; the guest does only what touches a share.** DKG, reshare and
    recover keep their networking and lock handling in charon. The guest checks a ceremony order signed
    by a threshold of operators, then deals, combines, and signs lock hashes, deposits and registrations
@@ -198,7 +210,7 @@ Cluster shape guidance that follows from this:
 
 ### Phases
 
-9. **Proposed: client roles, denied unless granted.** Each pinned client certificate carries the
+9. **Client roles, denied unless granted (built).** Each pinned client certificate carries the
    operations it may request, and anything not listed is refused, including request types added by a
    future fork.
    * The validator client's certificate gets duties: attestations, blocks, aggregation, sync committee,
@@ -333,9 +345,9 @@ The honest state today. None of these are hidden; most are planned in the phases
 | Anti-rollback | None. A restored disk snapshot rolls back slashing watermarks. The proposed start floor is design choice 5. |
 | Cluster edits | Not implemented. Recover, the reshare family with guests, ceremony orders and tombstones are designed in [docs/cluster-edits.md](docs/cluster-edits.md). Watermarks are stored per share pubkey, so a reshare would start them empty until they are keyed by validator. |
 | Forks | Gloas types implemented against consensus-specs v1.7.0-beta.4 and remote-signing-api v1.4.0, checked against the spec tests, go-eth2-client and Web3Signer's examples, and run on a Gloas devnet: Lighthouse, Teku, Lodestar and Prysm each signed every Gloas kind they use through sev-signer in a charon cluster, with no rejections, and every PTC vote was included. Gloas is still changing upstream, so each spec release needs re-checking. |
-| Exits | `VOLUNTARY_EXIT` is permitted for any authorised client today and is not rate limited. In a DV each signer holds one share, so an exit needs a threshold of operators to sign. Restricting exits to clients with an exit role is planned (design choice 9). Exits authorised by a party other than the operators are an open design item. |
+| Exits | `VOLUNTARY_EXIT` needs a client certificate with the `exit` role, and is not rate limited. In a DV each signer holds one share, so an exit needs a threshold of operators to sign. A `knownClients` line without roles still gets `exit`, for compatibility. Clients without a certificate (no mTLS) are not role-checked yet; the bearer token will carry roles too. Exits authorised by a party other than the operators are an open design item. |
 | Operations | No metrics (planned, opt-in) or request-parser fuzzing. |
 | Client auth | Pinned-cert mTLS on the signing listener, plus an optional public listener for health and evidence. A token as a second factor is planned (Phase 2). Lodestar, Prysm and Nimbus can't present a client certificate, and Lodestar can't send a token either. |
 | Key import | Keystores and password files are read from a directory. Encrypted import over the keymanager API, or DKG inside the guest, is planned (design choice 1). |
-| Pinned settings | `VALIDATOR_REGISTRATION` signs any fee recipient, and exits and deposits are startup flags. Pinned, operator-confirmed settings are planned (design choice 7). |
+| Pinned settings | Fee recipients are pinned from the cluster lock (`--cluster-lock`), and the lock itself is pinned on first start. Without a lock (solo use), fee recipients are not checked. Pre-Gloas block fee recipients can't be checked (headers only). Deposits remain a startup flag. |
 | Review | Unaudited, with no external review yet. |

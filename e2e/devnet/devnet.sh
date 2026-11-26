@@ -171,7 +171,7 @@ client_cert() {
     -subj "/CN=vc-node$i" -keyout "$c/client.key" -out "$c/client.crt" 2>/dev/null
   openssl pkcs12 -export -inkey "$c/client.key" -in "$c/client.crt" -out "$c/client.p12" -passout pass:devnet
   printf devnet >"$c/pass.txt"
-  echo "vc-node$i $(openssl x509 -in "$c/client.crt" -outform der | openssl dgst -sha256 -hex | awk '{print $NF}')" \
+  echo "vc-node$i $(openssl x509 -in "$c/client.crt" -outform der | openssl dgst -sha256 -hex | awk '{print $NF}') duties" \
     >"$c/knownClients.txt"
 }
 
@@ -182,10 +182,11 @@ signer_up() {
   docker run -d --name "$P-signer$i" --network "container:$P-charon$i" --memory 256m "${U[@]}" "${LOGOPT[@]}" \
     -e RUST_LOG=sev_signer=debug,tower_http=info \
     -v "$SEV_SIGNER:/usr/local/bin/sev-signer:ro" -v "$W/cluster/node$i/validator_keys:/keys:ro" \
+    -v "$W/cluster/node$i/cluster-lock.json:/cluster-lock.json:ro" \
     -v "$W/run/node$i:/node" -v "$W/genesis:/genesis:ro" "$TOOLS" \
     sev-signer serve --platform insecure-dev --insecure-dev-root-key /node/dev-root.key \
     --network /genesis/config.yaml --genesis-validators-root "$GVR" \
-    --keystores-dir /keys --data-dir /node/signer-data \
+    --keystores-dir /keys --data-dir /node/signer-data --cluster-lock /cluster-lock.json \
     --listen 127.0.0.1:9000 --public-listen 0.0.0.0:9001 "${mtls[@]}" >/dev/null
 }
 

@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use axum::body::Bytes;
-use axum::extract::{DefaultBodyLimit, Path, Query, State};
+use axum::extract::{DefaultBodyLimit, Extension, Path, Query, State};
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
@@ -14,10 +14,12 @@ use serde_json::json;
 
 use crate::keystore::SecretKey;
 use crate::network::Network;
+use crate::pins::Pins;
 use crate::platform::{Platform, PlatformError};
-use crate::signing::{self, Policy, PrepareError, SignRequest};
+use crate::signing::{self, Policy, PrepareError, SignBody, SignRequest};
 use crate::slashing::{SlashingDb, SlashingError};
 use crate::tee;
+use crate::tls::{ClientFingerprint, KnownRoles, Role};
 
 pub struct AppState {
     pub keys: BTreeMap<[u8; 48], SecretKey>,
@@ -28,6 +30,19 @@ pub struct AppState {
     pub tls_cert: Option<(Vec<u8>, String)>,
     /// Source of attestation evidence.
     pub platform: Platform,
+    /// Settings pinned from the cluster lock, if any.
+    pub pins: Option<Pins>,
+    /// Roles of the pinned client certificates, when mutual TLS is on.
+    pub roles: Option<KnownRoles>,
+}
+
+/// The role a request needs.
+fn required_role(body: &SignBody) -> Role {
+    match body {
+        SignBody::VoluntaryExit { .. } => Role::Exit,
+        SignBody::Deposit { .. } => Role::Deposit,
+        _ => Role::Duties,
+    }
 }
 
 /// Sign requests carry at most a Gloas execution payload envelope: a full
@@ -89,6 +104,7 @@ fn parse_pubkey(s: &str) -> Option<[u8; 48]> {
 async fn sign(
     State(st): State<Arc<AppState>>,
     Path(identifier): Path<String>,
+    client: Option<Extension<ClientFingerprint>>,
     headers: HeaderMap,
     body: Bytes,
 ) -> Response {
@@ -110,6 +126,28 @@ async fn sign(
             return error(StatusCode::BAD_REQUEST, msg);
         }
     };
+
+    if let Some(roles) = &st.roles {
+        let role = required_role(&req.body);
+        let allowed = client
+            .and_then(|Extension(ClientFingerprint(fp))| fp)
+            .is_some_and(|fp| roles.allows(&fp, role));
+        if !allowed {
+            let msg = format!(
+                "client certificate lacks the {:?} role for this request",
+                role.name()
+            );
+            tracing::warn!(pubkey = %identifier, error = %msg, "rejected sign request");
+            return error(StatusCode::FORBIDDEN, msg);
+        }
+    }
+
+    if let Some(pins) = &st.pins
+        && let Err(e) = pins.check(&pubkey, &req.body)
+    {
+        tracing::warn!(pubkey = %identifier, status = %StatusCode::FORBIDDEN, error = %e, "rejected sign request");
+        return error(StatusCode::FORBIDDEN, e.to_string());
+    }
 
     let prepared = match signing::prepare(&req, &st.network, &st.policy) {
         Ok(p) => p,
@@ -184,7 +222,8 @@ async fn attestation(
     };
 
     let pubkeys: Vec<[u8; 48]> = st.keys.keys().copied().collect();
-    let report_data = tee::report_data(&nonce, &cert_der, &pubkeys);
+    let lock_hash = st.pins.as_ref().map(|p| p.lock_hash);
+    let report_data = tee::report_data(&nonce, &cert_der, &pubkeys, lock_hash.as_ref());
 
     let st2 = st.clone();
     match tokio::task::spawn_blocking(move || st2.platform.evidence(&report_data)).await {
@@ -195,6 +234,7 @@ async fn attestation(
             "report_data": format!("0x{}", hex::encode(report_data)),
             "tls_certificate": cert_pem,
             "pubkeys": pubkeys.iter().map(|k| format!("0x{}", hex::encode(k))).collect::<Vec<_>>(),
+            "cluster_lock_hash": lock_hash.map(|h| format!("0x{}", hex::encode(h))),
         }))
         .into_response(),
         Ok(Err(e @ PlatformError::Tee(tee::TeeError::Unavailable))) => {

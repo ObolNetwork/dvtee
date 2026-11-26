@@ -382,6 +382,8 @@ fn app_on(data: &std::path::Path, policy: Policy, net: Network) -> axum::Router 
         policy,
         tls_cert: None,
         platform: sev_signer::platform::Platform::Tee,
+        pins: None,
+        roles: None,
     };
     router(Arc::new(state))
 }
@@ -571,4 +573,77 @@ async fn http_api_gloas() {
         post(&hoodi_app, pk, &block.request, false).await.0,
         StatusCode::BAD_REQUEST
     );
+}
+
+/// Client roles: each pinned certificate may only request what its
+/// `knownClients` line grants.
+#[tokio::test]
+async fn client_roles() {
+    use sev_signer::tls::{ClientFingerprint, known_roles};
+
+    let v = vectors();
+    let tmp = tempfile::tempdir().unwrap();
+    let (vc, ops, legacy) = ([1u8; 32], [2u8; 32], [3u8; 32]);
+    let fp = |b: &[u8; 32]| {
+        b.iter()
+            .map(|x| format!("{x:02X}"))
+            .collect::<Vec<_>>()
+            .join(":")
+    };
+    let known = tmp.path().join("knownClients.txt");
+    std::fs::write(
+        &known,
+        format!(
+            "vc {} duties\nops {} exit\nold {}\n",
+            fp(&vc),
+            fp(&ops),
+            fp(&legacy)
+        ),
+    )
+    .unwrap();
+    let roles = known_roles(&known).unwrap();
+
+    let net = hoodi_gloas();
+    let state = AppState {
+        keys: keystore::load_dir(&dir().join("keystores")).unwrap(),
+        db: SlashingDb::open(&tmp.path().join("slashing"), net.genesis_validators_root).unwrap(),
+        network: net,
+        policy: allow_all(),
+        tls_cert: None,
+        platform: sev_signer::platform::Platform::Tee,
+        pins: None,
+        roles: Some(roles),
+    };
+    let app = router(Arc::new(state));
+
+    let send = |client: Option<[u8; 32]>, name: &str| {
+        let app = app.clone();
+        let body = get(&v, name).request.clone();
+        let pk = v.public_key.clone();
+        async move {
+            let mut req = Request::post(format!("/api/v1/eth2/sign/{pk}"))
+                .header("content-type", "application/json")
+                .body(Body::from(body.to_string()))
+                .unwrap();
+            req.extensions_mut().insert(ClientFingerprint(client));
+            app.oneshot(req).await.unwrap().status()
+        }
+    };
+
+    assert_eq!(
+        send(Some(vc), "voluntary_exit").await,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(send(Some(ops), "attestation").await, StatusCode::FORBIDDEN);
+    assert_eq!(send(None, "attestation").await, StatusCode::FORBIDDEN);
+    assert_eq!(
+        send(Some([9u8; 32]), "attestation").await,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(send(Some(vc), "attestation").await, StatusCode::OK);
+    assert_eq!(send(Some(ops), "voluntary_exit").await, StatusCode::OK);
+    // A line without roles keeps the old behaviour: duties and exits.
+    assert_eq!(send(Some(legacy), "voluntary_exit").await, StatusCode::OK);
+    // Nobody was granted deposits.
+    assert_eq!(send(Some(legacy), "deposit").await, StatusCode::FORBIDDEN);
 }
