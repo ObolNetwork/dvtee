@@ -384,6 +384,7 @@ fn app_on(data: &std::path::Path, policy: Policy, net: Network) -> axum::Router 
         platform: sev_signer::platform::Platform::Tee,
         pins: None,
         roles: None,
+        tokens: None,
     };
     router(Arc::new(state))
 }
@@ -613,6 +614,7 @@ async fn client_roles() {
         platform: sev_signer::platform::Platform::Tee,
         pins: None,
         roles: Some(roles),
+        tokens: None,
     };
     let app = router(Arc::new(state));
 
@@ -646,4 +648,109 @@ async fn client_roles() {
     assert_eq!(send(Some(legacy), "voluntary_exit").await, StatusCode::OK);
     // Nobody was granted deposits.
     assert_eq!(send(Some(legacy), "deposit").await, StatusCode::FORBIDDEN);
+}
+
+/// Bearer tokens: required on /api/v1/eth2/*, accepted as Bearer or as the
+/// Basic password, answered with a Basic challenge, and carrying roles.
+#[tokio::test]
+async fn auth_tokens() {
+    use sev_signer::auth::Tokens;
+
+    let v = vectors();
+    let tmp = tempfile::tempdir().unwrap();
+    let (vc, ops) = ("v".repeat(40), "o".repeat(40));
+    let file = tmp.path().join("tokens");
+    std::fs::write(&file, format!("vc {vc}\nops {ops} exit\n")).unwrap();
+
+    let net = hoodi_gloas();
+    let state = AppState {
+        keys: keystore::load_dir(&dir().join("keystores")).unwrap(),
+        db: SlashingDb::open(&tmp.path().join("slashing"), net.genesis_validators_root).unwrap(),
+        network: net,
+        policy: allow_all(),
+        tls_cert: None,
+        platform: sev_signer::platform::Platform::Tee,
+        pins: None,
+        roles: None,
+        tokens: Some(Tokens::load(&file).unwrap()),
+    };
+    let app = router(Arc::new(state));
+
+    let call = |auth: Option<String>, path: String, body: Option<serde_json::Value>| {
+        let app = app.clone();
+        async move {
+            let mut req = match &body {
+                Some(_) => Request::post(&path).header("content-type", "application/json"),
+                None => Request::get(&path),
+            };
+            if let Some(a) = auth {
+                req = req.header("authorization", a);
+            }
+            let body = body.map_or(Body::empty(), |b| Body::from(b.to_string()));
+            app.oneshot(req.body(body).unwrap()).await.unwrap()
+        }
+    };
+    let basic = |user: &str, pass: &str| {
+        // Base64 of "user:pass" for ASCII input.
+        const T: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+        let input = format!("{user}:{pass}");
+        let mut out = String::new();
+        for c in input.as_bytes().chunks(3) {
+            let n = (c[0] as u32) << 16
+                | (*c.get(1).unwrap_or(&0) as u32) << 8
+                | *c.get(2).unwrap_or(&0) as u32;
+            for i in 0..4 {
+                if i <= c.len() {
+                    out.push(T[(n >> (18 - 6 * i) & 63) as usize] as char);
+                } else {
+                    out.push('=');
+                }
+            }
+        }
+        format!("Basic {out}")
+    };
+    let sign = format!("/api/v1/eth2/sign/{}", v.public_key);
+    let att = get(&v, "attestation").request.clone();
+    let exit = get(&v, "voluntary_exit").request.clone();
+
+    // Health and evidence stay open.
+    assert_eq!(
+        call(None, "/upcheck".into(), None).await.status(),
+        StatusCode::OK
+    );
+
+    let r = call(None, "/api/v1/eth2/publicKeys".into(), None).await;
+    assert_eq!(r.status(), StatusCode::UNAUTHORIZED);
+    assert!(
+        r.headers()["www-authenticate"]
+            .to_str()
+            .unwrap()
+            .starts_with("Basic")
+    );
+    let r = call(
+        Some(format!("Bearer {}", "x".repeat(40))),
+        sign.clone(),
+        Some(att.clone()),
+    )
+    .await;
+    assert_eq!(r.status(), StatusCode::UNAUTHORIZED);
+
+    let r = call(
+        Some(format!("Bearer {vc}")),
+        "/api/v1/eth2/publicKeys".into(),
+        None,
+    )
+    .await;
+    assert_eq!(r.status(), StatusCode::OK);
+    let r = call(Some(basic("vc", &vc)), sign.clone(), Some(att.clone())).await;
+    assert_eq!(r.status(), StatusCode::OK);
+    // The Basic username is ignored; only the token counts.
+    let r = call(Some(basic("anything", &vc)), sign.clone(), Some(att)).await;
+    assert_eq!(r.status(), StatusCode::OK);
+
+    // Roles: the duties token can't exit, the exit token can.
+    let r = call(Some(basic("vc", &vc)), sign.clone(), Some(exit.clone())).await;
+    assert_eq!(r.status(), StatusCode::FORBIDDEN);
+    let r = call(Some(format!("Bearer {ops}")), sign, Some(exit)).await;
+    assert_eq!(r.status(), StatusCode::OK);
 }

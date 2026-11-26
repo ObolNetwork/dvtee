@@ -175,9 +175,21 @@ client_cert() {
     >"$c/knownClients.txt"
 }
 
+# Bearer tokens for node1 (Teku, on top of mTLS) and node3 (Prysm), sent as the password in the signer URL.
+token() { # node -> token (created on first use)
+  local f=$W/run/node$1/token
+  mkdir -p "$W/run/node$1"
+  [[ -s $f ]] || openssl rand -hex 32 >"$f"
+  cat "$f"
+}
+
 signer_up() {
   local i=$1 mtls=()
   [[ $i == 0 || $i == 1 ]] && mtls=(--tls-known-clients /node/client/knownClients.txt)
+  if [[ $i == 1 || $i == 3 ]]; then
+    echo "vc-node$i $(token "$i") duties" >"$W/run/node$i/tokens.txt"
+    mtls+=(--auth-token-file /node/tokens.txt)
+  fi
   mkdir -p "$W/run/node$i/signer-data"
   docker run -d --name "$P-signer$i" --network "container:$P-charon$i" --memory 256m "${U[@]}" "${LOGOPT[@]}" \
     -e RUST_LOG=sev_signer=debug,tower_http=info \
@@ -223,7 +235,7 @@ EOF
       -e JAVA_OPTS=-Xmx768m -v "$n:/node" -v "$W/genesis:/genesis:ro" $TEKU \
       validator-client --network=/genesis/config.yaml --beacon-node-api-endpoint=http://127.0.0.1:3600 \
       --data-base-path=/node/vc \
-      --validators-external-signer-url=https://127.0.0.1:9000 \
+      --validators-external-signer-url="https://vc:$(token 1)@127.0.0.1:9000" \
       --validators-external-signer-public-keys=external-signer \
       --validators-external-signer-keystore=/node/client/client.p12 \
       --validators-external-signer-keystore-password-file=/node/client/pass.txt \
@@ -246,8 +258,8 @@ EOF
       --accept-terms-of-use --datadir=/node/vc --chain-config-file=/genesis/config.yaml \
       --enable-beacon-rest-api --beacon-rest-api-provider=http://127.0.0.1:3600 \
       --beacon-rpc-provider=127.0.0.1:3600 \
-      --validators-external-signer-url=https://127.0.0.1:9000 \
-      --validators-external-signer-public-keys=https://127.0.0.1:9000/api/v1/eth2/publicKeys \
+      --validators-external-signer-url="https://vc:$(token 3)@127.0.0.1:9000" \
+      --validators-external-signer-public-keys="https://vc:$(token 3)@127.0.0.1:9000/api/v1/eth2/publicKeys" \
       --suggested-fee-recipient=$FEE --distributed >/dev/null
     ;;
   esac

@@ -60,6 +60,20 @@ impl Role {
         }
     }
 
+    /// A comma-separated role list, sorted and deduplicated.
+    pub fn parse_list(s: &str) -> anyhow::Result<Vec<Self>> {
+        let mut roles = s
+            .split(',')
+            .map(|r| {
+                Self::parse(r)
+                    .with_context(|| format!("unknown role {r:?} (duties, exit, deposit)"))
+            })
+            .collect::<anyhow::Result<Vec<_>>>()?;
+        roles.sort();
+        roles.dedup();
+        Ok(roles)
+    }
+
     pub fn name(self) -> &'static str {
         match self {
             Self::Duties => "duties",
@@ -248,16 +262,7 @@ impl PinnedClients {
                         .checked_sub(2)
                         .and_then(|i| parse_fingerprint(cols[i]))
                         .with_context(|| format!("bad SHA-256 fingerprint {line:?}"))?;
-                    let mut granted = last
-                        .split(',')
-                        .map(|r| {
-                            Role::parse(r).with_context(|| {
-                                format!("unknown role {r:?} in {line:?} (duties, exit, deposit)")
-                            })
-                        })
-                        .collect::<anyhow::Result<Vec<_>>>()?;
-                    granted.sort();
-                    granted.dedup();
+                    let granted = Role::parse_list(last).with_context(|| format!("in {line:?}"))?;
                     (fp, granted)
                 }
             };

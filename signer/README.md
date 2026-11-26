@@ -35,6 +35,13 @@ cargo build --release
   ```
   A line without a third column (Web3Signer's format) gets `duties,exit`, as every client did before
   roles; the signer logs a warning.
+* **Tokens.** `--auth-token-file tokens.txt` requires a token on `/api/v1/eth2/*`, one per line as
+  `<name> <token> [roles]` (roles as above, default `duties`; tokens of at least 32 printable
+  characters, e.g. `openssl rand -hex 32`). Validator clients send it as the password in the signer URL,
+  `https://vc:<token>@signer:9000`; `Authorization: Bearer <token>` works too. A missing or wrong token
+  gets `401` with `WWW-Authenticate: Basic`, which Teku waits for before sending credentials. With both
+  mTLS and tokens, a request needs the role from both. Tokens are never logged; health and attestation
+  stay open.
 * **Cluster lock.** `--cluster-lock` pins the signer to a charon cluster lock on first start. The
   signer checks the lock's hashes and aggregate signature, requires every loaded key to be one of its
   public shares at a single operator index, and stores the lock in `<data-dir>/cluster-lock.json`.
