@@ -458,6 +458,37 @@ mod tests {
         db.check_and_record(&PK, att(6, 8), &[5; 32]).unwrap();
     }
 
+    /// Concurrent writers each get their own record, and a key's watermark still only moves forward.
+    #[test]
+    fn concurrent_writes() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = SlashingDb::open(dir.path(), [1u8; 32]).unwrap();
+        std::thread::scope(|s| {
+            for i in 0..64u8 {
+                let db = &db;
+                s.spawn(move || {
+                    let pk = [i; 48];
+                    db.check_and_record(&pk, att(1, 2), &[i; 32]).unwrap();
+                    // Identical re-signs of one shared key are all allowed.
+                    db.check_and_record(&[200; 48], att(1, 2), &[0; 32])
+                        .unwrap();
+                });
+            }
+        });
+        let db = SlashingDb::open(dir.path(), [1u8; 32]).unwrap();
+        assert!(
+            db.check_and_record(&[200; 48], att(1, 2), &[1; 32])
+                .is_err()
+        );
+        for i in 0..64u8 {
+            assert!(
+                db.check_and_record(&[i; 48], att(1, 2), &[255; 32])
+                    .is_err()
+            );
+            db.check_and_record(&[i; 48], att(2, 3), &[9; 32]).unwrap();
+        }
+    }
+
     #[test]
     fn persists_across_reopen() {
         let dir = tempfile::tempdir().unwrap();

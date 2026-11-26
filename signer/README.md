@@ -291,3 +291,10 @@ cargo test --features insecure-dev
   scripts/fetch-interchange-tests.sh     # ~8 KB download into interchange-tests/
   INTERCHANGE_TESTS_DIR=$PWD/interchange-tests cargo test --test interchange_tests -- --nocapture
   ```
+
+## Load test
+
+`scripts/load-test.sh` measures signatures per slot within a latency budget, with a charon DV's full
+duty mix, against the real binary over TLS with an fsynced slashing database. The tool is
+`sev-signer-load` (`--features load-test`, not built by default). Method and results are in
+[`docs/load-test.md`](../docs/load-test.md).

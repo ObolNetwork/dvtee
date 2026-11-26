@@ -304,12 +304,15 @@ Cluster shape guidance that follows from this:
   generation must be covered by the same protection as the watermarks.
 * **Metrics, off by default.** `--metrics-listen` serves Prometheus metrics: sign latency by request
   kind, rejections, slashing refusals, watermark sync time, and the build commit and measurement.
-* **Grouped watermark writes, if the load test needs them.** Each signature's watermark is fsynced on
-  its own today. A burst of attestations at the start of a slot could then wait on disk syncs. Group
-  commit lets concurrent writes share one sync, while each signature is still released only after its
-  own watermark is durable. Size it with the load test: with consolidated (0x02) validators a signer
-  sees on the order of 30 attestations a slot at the high end, more for clusters with many 0x01
-  validators.
+* **Watermark writes without a journal commit each.** The load test ([docs/load-test.md](docs/load-test.md))
+  meets 100 attestations a slot with the full DV duty mix: median 22 ms, every request under 1 s
+  (worst 0.99 s). With consolidated (0x02) validators a signer sees about 30 a slot, where p99 was
+  25 ms. The tail comes from disk syncs: each watermark is a new file, two fsyncs and a rename, and
+  slow ext4 journal commits delay whole bursts, up to 1.9 s at 200 a slot. Without fsync the same box
+  signs 6400 attestations a slot with p99 440 ms. Grouping the per-file writes was slower on a quiet
+  disk, since concurrent fsyncs already share journal commits. A store that overwrites fixed records
+  in a preallocated file with `fdatasync` (0.7 ms instead of 9 ms, no journal commit) is the
+  candidate. Rerun the load test on SNP hardware and its real data disk first.
 * Fuzzing of the request parsers.
 
 **Phase 4: Intel and Arm**
@@ -360,6 +363,7 @@ The honest state today. None of these are hidden; most are planned in the phases
 | Forks | Gloas types implemented against consensus-specs v1.7.0-beta.4 and remote-signing-api v1.4.0, checked against the spec tests, go-eth2-client and Web3Signer's examples, and run on a Gloas devnet: Lighthouse, Teku, Lodestar and Prysm each signed every Gloas kind they use through sev-signer in a charon cluster, with no rejections, and every PTC vote was included. Gloas is still changing upstream, so each spec release needs re-checking. |
 | Exits | `VOLUNTARY_EXIT` needs a client certificate or token with the `exit` role, and is not rate limited. In a DV each signer holds one share, so an exit needs a threshold of operators to sign. A `knownClients` line without roles still gets `exit`, for compatibility. A signer with neither mTLS nor tokens checks no roles. Exits authorised by a party other than the operators are an open design item. |
 | Operations | No metrics (planned, opt-in) or request-parser fuzzing. |
+| Load | Measured on a dev box only, not in an SNP guest ([docs/load-test.md](docs/load-test.md)): 100 attestations a slot plus the rest of the DV duty mix complete within 1 s, at a 22 ms median. Disk syncs set the tail (bursts up to 1.9 s at 200 a slot on a consumer NVMe), not signing. |
 | Client auth | Pinned-cert mTLS with roles on the signing listener, bearer tokens with roles (`--auth-token-file`, also accepted as the Basic password from a URL), and an optional public listener for health and evidence. Lodestar can send neither a client certificate nor URL credentials, so a Lodestar signer is protected only by network isolation. Tokens are still provisioned as a file; generating one in the guest and handing it out over the attested channel is planned. |
 | Key import | Keystores and password files are read from a directory. Encrypted import over the keymanager API, or DKG inside the guest, is planned (design choice 1). |
 | Pinned settings | Fee recipients are pinned from the cluster lock (`--cluster-lock`), and the lock itself is pinned on first start. Without a lock (solo use), fee recipients are not checked. Pre-Gloas block fee recipients can't be checked (headers only). Deposits remain a startup flag. |

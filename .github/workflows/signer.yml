@@ -42,6 +42,9 @@ jobs:
       - run: cargo test --locked
       - run: cargo clippy --all-targets --locked --features insecure-dev -- -D warnings
       - run: cargo test --locked --features insecure-dev
+      # The load test tool (docs/load-test.md).
+      - run: cargo clippy --all-targets --locked --all-features -- -D warnings
+      - run: cargo test --locked --features load-test
       # Consensus spec tests and ssz-specs vectors: the pinned archives are
       # streamed once (~1 GB, only ~1 MB extracted) and cached by script hash.
       - name: Cache spec tests
