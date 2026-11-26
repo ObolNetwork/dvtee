@@ -97,8 +97,9 @@ reviewed at the same time and are superseded by `signer/`.
   both support both.
 * **Attestation.** `GET /api/v1/tee/attestation?nonce=` uses configfs-tsm, so the same code serves
   SEV-SNP, TDX and CCA. REPORT_DATA binds the nonce, the TLS certificate and the BLS key set.
-* **Offline evidence check.** `sev-signer verify-evidence` checks the binding, the debug policy bit and
-  the expected measurement.
+* **Offline evidence check.** `sev-signer verify-evidence` checks the AMD chain against pinned roots,
+  the report signature, the VCEK's TCB and chip id, guest policy, a minimum TCB, the binding and the
+  expected measurement.
 * **Footprint.** No consensus types library. SSZ merkleization, including the progressive types Gloas
   uses (EIP-7916, EIP-7495), is hand-rolled and checked against the consensus spec tests (v1.7.0-beta.4
   `ssz_static`) and the ssz-specs progressive vectors.
@@ -244,8 +245,9 @@ Cluster shape guidance that follows from this:
 **Phase 2: attestation in the operator workflow**
 
 * Add a verifier that checks the AMD chain (ARK → ASK → VCEK from KDS), the report signature, the
-  measurement, the policy (debug off, SMT/migration policy) and the binding. Wrap
-  `snpguest verify` / `sev` crate or ship a Go verifier.
+  measurement, the policy (debug off, SMT/migration policy) and the binding. Done in
+  `sev-signer verify-evidence`, offline with pinned AMD roots. It still needs a run against a live
+  report, and charon needs a Go equivalent or a way to call it.
 * Pin the attested TLS certificate in the validator client's web3signer configuration.
 * Have charon verify peers' signer evidence at startup and periodically, and expose it as a metric
   (design choice 4). Ceremonies depend on this too: it is how operators check that a ceremony key really
@@ -342,8 +344,8 @@ The honest state today. None of these are hidden; most are planned in the phases
 |---|---|
 | Hardware | Never run in a real SNP guest. configfs-tsm reading and the SNP/TDX report offsets come from the specs. The SNP derived-key ioctl behind `sealing-key` is pinned to the kernel UAPI header by tests but has not been run. Everything else can be developed on any Linux machine with the `insecure-dev` platform (see [`signer/README.md`](signer/README.md)). |
 | End-to-end | `e2e/devnet/` runs a Kurtosis devnet with a 3-of-4 charon cluster where Lighthouse, Teku, Lodestar and Prysm each sign through their own sev-signer (insecure-dev). Over two runs: charon accepted every partial signature, every duty type including aggregates reached the chain, DV duties kept working with one node down, and slashing protection held across signer restarts. Runs are manual (about 4 GB of RAM, 15–40 minutes), not in CI. Only the insecure-dev platform has been tested. `e2e/simnet.sh` is a lighter local smoke test on charon's beacon mock. |
-| Attestation verification | `verify-evidence` checks the binding, debug bit and measurement, but not the AMD chain (ARK → ASK → VCEK) or the report signature. |
-| Minimum TCB | `sealing-key` mixes a pinned minimum TCB into the SNP key. The verifier does not check it yet. |
+| Attestation verification | `verify-evidence` verifies SNP evidence offline: the AMD chain with the Milan, Genoa and Turin ARKs pinned, the report signature, the VCEK's TCB and chip id, guest policy and VMPL, the binding and the measurement. It is tested with a real Milan report and a real Turin VCEK, but not yet with a live report from our guest. Not checked: AMD's CRL, the configfs-tsm `auxblob` certificate table on a real host, and TDX quote signatures. |
+| Minimum TCB | `sealing-key` mixes a pinned minimum TCB into the SNP key. `verify-evidence --min-tcb` takes the same value and checks the reported and committed TCB against it, component by component. Neither has run on hardware. |
 | Guest image | The 2024 Alpine image is unsafe for keys (see Findings). The mkosi image is not started. |
 | Anti-rollback | None. A restored disk snapshot rolls back slashing watermarks. The proposed start floor is design choice 5. |
 | Cluster edits | Not implemented. Recover, the reshare family with guests, ceremony orders and tombstones are designed in [docs/cluster-edits.md](docs/cluster-edits.md). Watermarks are stored per share pubkey, so a reshare would start them empty until they are keyed by validator. |

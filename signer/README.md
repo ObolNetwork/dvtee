@@ -147,20 +147,40 @@ partials were accepted on chain.
 ```sh
 NONCE=$(openssl rand -hex 32)
 curl --cacert cert.pem "https://signer:9000/api/v1/tee/attestation?nonce=$NONCE" > evidence.json
-sev-signer verify-evidence --evidence evidence.json --nonce $NONCE --expected-measurement <hex> \
-  --expected-cluster-lock-hash $(jq -r .lock_hash cluster-lock.json)
-# then verify the report's hardware signature, e.g. for SEV-SNP:
-#   jq -r .report evidence.json | xxd -r -p > report.bin   (strip the 0x prefix first)
-#   snpguest fetch ca ...; snpguest fetch vcek ...; snpguest verify attestation ...
+sev-signer verify-evidence --evidence evidence.json --nonce $NONCE \
+  --expected-measurement <hex> --min-tcb <same value as sealing-key --snp-min-tcb> \
+  --expected-cluster-lock-hash $(jq -r .lock_hash cluster-lock.json) \
+  --vcek vcek.der          # or --fetch-vcek, or neither if the evidence carries it
 ```
 
-`verify-evidence` checks:
-* the REPORT_DATA binding (nonce, TLS certificate, BLS keys and, when pinned, the cluster lock hash);
-* with `--expected-cluster-lock-hash`, that the signer is pinned to your lock;
-* that the guest debug policy is off;
-* the launch measurement.
+For SEV-SNP, `verify-evidence` checks offline:
+* **AMD chain.** The ARKs for Milan, Genoa and Turin are built in (`certs/amd/`) and pinned by SHA-256
+  (fingerprints in [`tests/fixtures/snp/README.md`](tests/fixtures/snp/README.md)). It verifies
+  ARK → ASK → VCEK, or ARK → ASVK → VLEK.
+* **Report signature.** The report is signed by that VCEK or VLEK. Report versions 2 to 5 are accepted.
+* **VCEK binding.** The VCEK was issued for the report's chip id and reported TCB.
+* **Guest policy.** Debug is off, there is no migration agent, and the VMPL is `--expected-vmpl` (default 0).
+  `--deny-smt` fails if the host has SMT on.
+* **Minimum TCB.** `--min-tcb` takes the raw value that `sealing-key --snp-min-tcb` takes. The reported
+  and committed TCB must each meet it, component by component.
+* **Binding and measurement.** It checks the REPORT_DATA binding (nonce, TLS certificate, BLS keys and,
+  when pinned, the cluster lock hash) and the launch measurement. With `--expected-cluster-lock-hash`
+  it also checks that the signer is pinned to your lock.
+* **Report fields.** It also prints the guest SVN, family and image id, host data and the four TCBs.
 
-It does **not** verify the AMD or Intel signature chain yet.
+The VCEK comes from `--vcek`, or from the certificate table in the evidence's `auxblob` if the host
+provisioned one. With `--fetch-vcek` it comes from AMD's KDS; that is the only network access, and the
+fetched certificate is checked against the pinned roots like any other. Without a VCEK the check fails.
+For report version 3 and later, it also prints the KDS URL to download it from.
+
+**Not verified:**
+* revocation (AMD's CRL);
+* the TDX quote signature. For TDX it checks only the binding, debug bit and measurement, and it
+  fails unless you pass `--allow-unverified-tdx`. The provider label comes from the evidence, so
+  without that flag a relabelled SNP report can't skip the AMD checks.
+
+The parser and chain checks are tested against a real Milan report and VCEK, and a real Turin VCEK.
+They have not been run on a live report from our own guest yet.
 
 ## Sealing key
 
