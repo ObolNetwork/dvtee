@@ -160,7 +160,9 @@ Cluster shape guidance that follows from this:
    rebuild the same share inside a new guest. The lock, public shares and every other operator's share
    stay as they are. A reshare (`recreate-private-keys`, `replace-operator`) remains the tool for when a
    share may have leaked or the operator set changes. Strict sealing is then acceptable: there is no
-   export path, so there is none to attack. Design: [docs/cluster-edits.md](docs/cluster-edits.md).
+   export path, so there is none to attack. A new image is admitted only by the operators' threshold
+   order, never by a maintainer or vendor key. Design and the requirements for charon:
+   [docs/cluster-edits.md](docs/cluster-edits.md).
 3. **A compromised node holds only one share.** Below-threshold compromise cannot produce slashable
    signatures. What the TEE adds is protection for the share against a compromised host (theft,
    cloning, using the signer as an oracle), and in-TEE slashing protection.
