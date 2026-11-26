@@ -42,7 +42,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use base64::Engine;
-use ring::rand::{SecureRandom, SystemRandom};
+use ring::rand::{SecureRandom, SystemRandom, generate};
 
 use crate::network::{Network, SLOTS_PER_EPOCH};
 use crate::roughtime;
@@ -210,6 +210,13 @@ pub fn agree(readings: &[roughtime::Reading], quorum: usize, tolerance: u64) -> 
     best.filter(|b| b.agreeing >= quorum)
 }
 
+/// A fresh random 32-byte Roughtime nonce.
+fn fresh_nonce(rng: &dyn SecureRandom) -> Result<[u8; 32], String> {
+    generate::<[u8; 32]>(rng)
+        .map(|n| n.expose())
+        .map_err(|_| "no randomness".to_string())
+}
+
 /// Queries every server in parallel and returns the quorum's bounds.
 pub fn measure(settings: &Settings, transport: &dyn Transport) -> Result<Bounds, String> {
     let rng = SystemRandom::new();
@@ -220,9 +227,7 @@ pub fn measure(settings: &Settings, transport: &dyn Transport) -> Result<Bounds,
             .map(|server| {
                 let rng = &rng;
                 s.spawn(move || {
-                    let mut nonce = [0u8; 32];
-                    rng.fill(&mut nonce)
-                        .map_err(|_| "no randomness".to_string())?;
+                    let nonce = fresh_nonce(rng)?;
                     let req = roughtime::request(&nonce, &server.public_key);
                     let resp = transport
                         .exchange(server, &req, settings.timeout)
@@ -825,9 +830,7 @@ mod tests {
             timeout: Duration::from_secs(3),
         };
         for server in &settings.servers {
-            let rng = SystemRandom::new();
-            let mut nonce = [0u8; 32];
-            rng.fill(&mut nonce).unwrap();
+            let nonce = fresh_nonce(&SystemRandom::new()).unwrap();
             let req = roughtime::request(&nonce, &server.public_key);
             let resp = Udp.exchange(server, &req, settings.timeout).unwrap();
             let r = roughtime::verify(&req, &nonce, &resp, &server.public_key).unwrap();
