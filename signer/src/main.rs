@@ -26,7 +26,7 @@ struct Cli {
 #[derive(Subcommand)]
 enum Cmd {
     /// Serve the signing API.
-    Serve(ServeArgs),
+    Serve(Box<ServeArgs>),
     /// Print the slashing protection database as EIP-3076 interchange JSON.
     SlashingExport {
         #[arg(
@@ -149,6 +149,12 @@ struct ServeArgs {
     /// this file (Web3Signer knownClients format).
     #[arg(long, env = "SEV_SIGNER_TLS_KNOWN_CLIENTS")]
     tls_known_clients: Option<PathBuf>,
+    /// Bearer tokens required on /api/v1/eth2/*, one per line:
+    /// `<name> <token> [roles]` (roles as in knownClients, default `duties`).
+    /// Validator clients send one as the password in the signer URL
+    /// (`https://vc:<token>@host:port`) or as `Authorization: Bearer`.
+    #[arg(long, env = "SEV_SIGNER_AUTH_TOKEN_FILE")]
+    auth_token_file: Option<PathBuf>,
     /// Second TLS listener serving only /upcheck, /healthcheck and
     /// /api/v1/tee/attestation, without client certificates, so peers and
     /// monitoring can fetch evidence while signing stays behind mTLS.
@@ -180,7 +186,7 @@ fn main() -> anyhow::Result<()> {
     match cli.cmd {
         Cmd::Serve(args) => {
             init_logging(args.log_json);
-            tokio::runtime::Runtime::new()?.block_on(serve(args))
+            tokio::runtime::Runtime::new()?.block_on(serve(*args))
         }
         Cmd::SlashingExport { data_dir, network } => {
             let network = network.resolve()?;
@@ -291,6 +297,17 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         )?)
     };
 
+    let tokens = match &args.auth_token_file {
+        Some(path) => {
+            let t = sev_signer::auth::Tokens::load(path)?;
+            if tls.is_none() {
+                tracing::warn!("auth tokens over plain HTTP are visible to the network");
+            }
+            Some(t)
+        }
+        None => None,
+    };
+
     let state = Arc::new(AppState {
         keys,
         db,
@@ -305,6 +322,7 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         platform,
         pins,
         roles: tls.as_ref().and_then(|m| m.roles.clone()),
+        tokens,
     });
     let app = api::router(state.clone()).layer(tower_http::trace::TraceLayer::new_for_http());
 
@@ -319,6 +337,7 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         keys = state.keys.len(),
         tls = tls.is_some(),
         mtls = args.tls_known_clients.is_some(),
+        tokens = state.tokens.as_ref().map_or(0, |t| t.len()),
         "sev-signer serving"
     );
 

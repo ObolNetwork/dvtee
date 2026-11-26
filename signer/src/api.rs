@@ -12,6 +12,7 @@ use axum::{Json, Router};
 use serde::Deserialize;
 use serde_json::json;
 
+use crate::auth::{TokenRoles, Tokens};
 use crate::keystore::SecretKey;
 use crate::network::Network;
 use crate::pins::Pins;
@@ -34,6 +35,8 @@ pub struct AppState {
     pub pins: Option<Pins>,
     /// Roles of the pinned client certificates, when mutual TLS is on.
     pub roles: Option<KnownRoles>,
+    /// Bearer tokens required on `/api/v1/eth2/*`, if configured.
+    pub tokens: Option<Tokens>,
 }
 
 /// The role a request needs.
@@ -51,17 +54,25 @@ fn required_role(body: &SignBody) -> Role {
 const SIGN_BODY_LIMIT: usize = 32 * 1024 * 1024;
 
 pub fn router(state: Arc<AppState>) -> Router {
+    let mut eth2 = Router::new()
+        .route("/api/v1/eth2/publicKeys", get(public_keys))
+        .route(
+            "/api/v1/eth2/sign/{identifier}",
+            post(sign).layer(DefaultBodyLimit::max(SIGN_BODY_LIMIT)),
+        );
+    if let Some(tokens) = state.tokens.clone() {
+        eth2 = eth2.route_layer(axum::middleware::from_fn_with_state(
+            tokens,
+            crate::auth::require_token,
+        ));
+    }
     Router::new()
         .route("/upcheck", get(|| async { "OK" }))
         .route(
             "/healthcheck",
             get(|| async { Json(json!({"status": "UP"})) }),
         )
-        .route("/api/v1/eth2/publicKeys", get(public_keys))
-        .route(
-            "/api/v1/eth2/sign/{identifier}",
-            post(sign).layer(DefaultBodyLimit::max(SIGN_BODY_LIMIT)),
-        )
+        .merge(eth2)
         .route("/api/v1/tee/attestation", get(attestation))
         .layer(DefaultBodyLimit::max(256 * 1024))
         .with_state(state)
@@ -105,6 +116,7 @@ async fn sign(
     State(st): State<Arc<AppState>>,
     Path(identifier): Path<String>,
     client: Option<Extension<ClientFingerprint>>,
+    token: Option<Extension<TokenRoles>>,
     headers: HeaderMap,
     body: Bytes,
 ) -> Response {
@@ -127,19 +139,28 @@ async fn sign(
         }
     };
 
-    if let Some(roles) = &st.roles {
-        let role = required_role(&req.body);
-        let allowed = client
+    // Every configured credential must grant the request's role.
+    let role = required_role(&req.body);
+    let denied = if let Some(roles) = &st.roles
+        && !client
             .and_then(|Extension(ClientFingerprint(fp))| fp)
-            .is_some_and(|fp| roles.allows(&fp, role));
-        if !allowed {
-            let msg = format!(
-                "client certificate lacks the {:?} role for this request",
-                role.name()
-            );
-            tracing::warn!(pubkey = %identifier, error = %msg, "rejected sign request");
-            return error(StatusCode::FORBIDDEN, msg);
-        }
+            .is_some_and(|fp| roles.allows(&fp, role))
+    {
+        Some("client certificate")
+    } else if st.tokens.is_some()
+        && !token.is_some_and(|Extension(TokenRoles(r))| r.contains(&role))
+    {
+        Some("token")
+    } else {
+        None
+    };
+    if let Some(credential) = denied {
+        let msg = format!(
+            "{credential} lacks the {:?} role for this request",
+            role.name()
+        );
+        tracing::warn!(pubkey = %identifier, error = %msg, "rejected sign request");
+        return error(StatusCode::FORBIDDEN, msg);
     }
 
     if let Some(pins) = &st.pins

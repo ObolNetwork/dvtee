@@ -267,7 +267,7 @@ Cluster shape guidance that follows from this:
     the same certificate and no client authentication, so peers can fetch evidence while signing
     stays behind mTLS.
   * **mTLS.** Keep pinned client certificates (`--tls-known-clients`) on by default.
-  * **Bearer token.** Add `--auth-token-file`.
+  * **Bearer token (built).** `--auth-token-file`, with roles per token like `knownClients`.
     * Require `Authorization: Bearer <token>` on `/api/v1/eth2/*`, compared in constant time.
     * Also accept the token as the password of HTTP Basic auth, because validator clients can only
       put credentials in the URL (`https://x:<token>@signer`).
@@ -348,9 +348,9 @@ The honest state today. None of these are hidden; most are planned in the phases
 | Anti-rollback | None. A restored disk snapshot rolls back slashing watermarks. The proposed start floor is design choice 5. |
 | Cluster edits | Not implemented. Recover, the reshare family with guests, ceremony orders and tombstones are designed in [docs/cluster-edits.md](docs/cluster-edits.md). Watermarks are stored per share pubkey, so a reshare would start them empty until they are keyed by validator. |
 | Forks | Gloas types implemented against consensus-specs v1.7.0-beta.4 and remote-signing-api v1.4.0, checked against the spec tests, go-eth2-client and Web3Signer's examples, and run on a Gloas devnet: Lighthouse, Teku, Lodestar and Prysm each signed every Gloas kind they use through sev-signer in a charon cluster, with no rejections, and every PTC vote was included. Gloas is still changing upstream, so each spec release needs re-checking. |
-| Exits | `VOLUNTARY_EXIT` needs a client certificate with the `exit` role, and is not rate limited. In a DV each signer holds one share, so an exit needs a threshold of operators to sign. A `knownClients` line without roles still gets `exit`, for compatibility. Clients without a certificate (no mTLS) are not role-checked yet; the bearer token will carry roles too. Exits authorised by a party other than the operators are an open design item. |
+| Exits | `VOLUNTARY_EXIT` needs a client certificate or token with the `exit` role, and is not rate limited. In a DV each signer holds one share, so an exit needs a threshold of operators to sign. A `knownClients` line without roles still gets `exit`, for compatibility. A signer with neither mTLS nor tokens checks no roles. Exits authorised by a party other than the operators are an open design item. |
 | Operations | No metrics (planned, opt-in) or request-parser fuzzing. |
-| Client auth | Pinned-cert mTLS on the signing listener, plus an optional public listener for health and evidence. A token as a second factor is planned (Phase 2). Lodestar, Prysm and Nimbus can't present a client certificate, and Lodestar can't send a token either. |
+| Client auth | Pinned-cert mTLS with roles on the signing listener, bearer tokens with roles (`--auth-token-file`, also accepted as the Basic password from a URL), and an optional public listener for health and evidence. Lodestar can send neither a client certificate nor URL credentials, so a Lodestar signer is protected only by network isolation. Tokens are still provisioned as a file; generating one in the guest and handing it out over the attested channel is planned. |
 | Key import | Keystores and password files are read from a directory. Encrypted import over the keymanager API, or DKG inside the guest, is planned (design choice 1). |
 | Pinned settings | Fee recipients are pinned from the cluster lock (`--cluster-lock`), and the lock itself is pinned on first start. Without a lock (solo use), fee recipients are not checked. Pre-Gloas block fee recipients can't be checked (headers only). Deposits remain a startup flag. |
 | Review | Unaudited, with no external review yet. |
