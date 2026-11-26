@@ -5,3 +5,7 @@ out
 *.log
 *.efi
 devnet-work/
+image/payload/
+image/mkosi.tools/
+image/mkosi.tools.manifest
+image/mkosi.cache/

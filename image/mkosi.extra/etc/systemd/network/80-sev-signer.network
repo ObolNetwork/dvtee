@@ -1,0 +1,9 @@
+[Match]
+Type=ether
+
+[Network]
+DHCP=ipv4
+LinkLocalAddressing=no
+IPv6AcceptRA=no
+LLMNR=no
+MulticastDNS=no

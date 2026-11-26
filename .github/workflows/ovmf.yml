@@ -2,7 +2,7 @@ name: ovmf
 
 # Builds OVMF twice, on different runner images, and fails unless both builds
 # are byte-identical. The summary publishes the firmware hash and the SNP OVMF
-# hash that vm-scripts/measure.sh turns into the guest's launch measurement.
+# hash that scripts/expected-measurement.sh turns into the guest's launch measurement.
 
 on:
   push:

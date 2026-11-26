@@ -1,0 +1,81 @@
+#!/bin/bash
+# TEMPORARY first-boot provisioning: copies keystores and settings from a
+# host-shared disk onto the sealed data disk, once.
+#
+# The host can read everything on that disk, keystores and passwords
+# included, so this path is only for test and devnet keys. The plan is to
+# import keys over attested TLS (keymanager API) or to run DKG inside the
+# guest; see ROADMAP.md, design choice 1.
+#
+# The disk (virtio serial `sev-signer-prov`) holds a plain tar archive, read
+# straight from the block device so the guest never mounts a host-made
+# filesystem. Layout (see scripts/make-provision-disk.sh):
+#   validator_keys/keystore-N.json, validator_keys/keystore-N.txt
+#   config/network                  mainnet | hoodi | sepolia | config.yaml
+#   config/config.yaml              with network = config.yaml
+#   config/genesis-validators-root  with network = config.yaml
+#   config/tls-sans                 optional, e.g. localhost,127.0.0.1
+#   config/knownClients.txt         optional, pinned client certificates and roles
+#   config/cluster-lock.json        optional, the charon lock to pin (--cluster-lock)
+#   config/tokens.txt               optional, bearer tokens (--auth-token-file)
+#   config/log-level                optional, info | debug
+#
+# The unit runs this only while <data>/provisioned is absent. On later boots
+# the provisioning disk is never read.
+set -euo pipefail
+umask 077
+
+HERE=$(dirname "$(readlink -f "$0")")
+# shellcheck source-path=SCRIPTDIR source=lib.sh
+. "$HERE/lib.sh"
+
+DEV=${SEV_SIGNER_PROV_DEV:-/dev/disk/by-id/virtio-sev-signer-prov}
+DATA=$SEV_SIGNER_DATA
+WAIT_SECS=${SEV_SIGNER_WAIT_SECS:-60}
+# ProtectSystem=strict makes /run read-only; the unit's RuntimeDirectory is not.
+TMP_PARENT=${RUNTIME_DIRECTORY:-${SEV_SIGNER_RUN_DIR:-/run/sev-signer-provision}}
+
+log() { echo "sev-signer-provision: $*" >&2; }
+die() { log "FAILED: $*"; exit 1; }
+
+[[ ! -e $DATA/provisioned ]] || die "already provisioned"
+
+for ((i = 0; i < WAIT_SECS; i++)); do
+	[[ -b $DEV || -f $DEV ]] && break
+	sleep 1
+done
+[[ -b $DEV || -f $DEV ]] \
+	|| die "no provisioning disk at $DEV (first boot needs one, serial=sev-signer-prov)"
+
+STAGE=$(mktemp -d "$TMP_PARENT/sev-signer-provision.XXXXXX")
+trap 'rm -rf "$STAGE"' EXIT
+
+tar --list --verbose --file "$DEV" >"$STAGE/verbose" || die "cannot read the provisioning archive"
+tar --list --file "$DEV" >"$STAGE/names" || die "cannot read the provisioning archive"
+sev_signer_check_listing "$STAGE/verbose" "$STAGE/names" || die "rejected provisioning archive"
+
+mkdir "$STAGE/root"
+tar --extract --file "$DEV" --directory "$STAGE/root" \
+	--no-same-owner --no-same-permissions --no-overwrite-dir --delay-directory-restore \
+	|| die "cannot extract the provisioning archive"
+if [[ -n $(find "$STAGE/root" -mindepth 1 ! -type f ! -type d) ]]; then
+	die "provisioning archive: unexpected file types"
+fi
+sev_signer_check_config "$STAGE/root" || die "rejected provisioning archive"
+
+# Copy into place, then write the marker last, so an interrupted run is
+# simply repeated on the next boot.
+rm -rf "$DATA/config" "$DATA/validator_keys"
+mkdir -m 0700 "$DATA/config" "$DATA/validator_keys"
+cp --no-dereference --preserve=timestamps "$STAGE/root/validator_keys/"keystore-* "$DATA/validator_keys/"
+cp --no-dereference --preserve=timestamps "$STAGE/root/config/"* "$DATA/config/"
+chmod 0600 "$DATA/config/"* "$DATA/validator_keys/"*
+sev_signer_check_config "$DATA" || die "copied config does not validate"
+
+keys=$(find "$DATA/validator_keys" -name 'keystore-*.json' | wc -l)
+digest=$(sha256sum <"$STAGE/names" | cut -d' ' -f1)
+printf 'provisioned keystores=%s listing-sha256=%s\n' "$keys" "$digest" >"$DATA/provisioned.tmp"
+sync -f "$DATA/provisioned.tmp"
+mv "$DATA/provisioned.tmp" "$DATA/provisioned"
+sync -f "$DATA"
+log "provisioned $keys keystore(s) from $DEV; this disk will not be read again"

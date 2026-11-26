@@ -67,10 +67,20 @@ To keep the devnet up while you investigate, run the steps one at a time:
 | `GLOAS_EPOCH` | `18446744073709551615` (not scheduled) | Gloas fork epoch, written into the enclave's `kurtosis-args.yaml` |
 | `EL_IMAGE`, `CL_IMAGE` | from `kurtosis-args.yaml` | Kurtosis geth, and Lighthouse BN and VC images |
 | `LIGHTHOUSE`, `TEKU`, `LODESTAR`, `PRYSM` | the versions above | DV validator client images |
+| `SIGNER3_REMOTE`, `SIGNER3_CERT`, `SIGNER3_LOG` | none | node3's signer runs elsewhere, e.g. in an SEV-SNP guest; see below |
 
 Each sev-signer reads the devnet's fork schedule from the genesis `config.yaml`. It is started with
 `--network /genesis/config.yaml --genesis-validators-root <gvr>`. `up` checks that the config's
 `GLOAS_FORK_EPOCH` equals `GLOAS_EPOCH`.
+
+## A remote signer for node3 (SEV-SNP guest)
+
+With `SIGNER3_REMOTE=<host>:<port>`, pod3 gets no local sev-signer. A `socat` forwarder in the pod
+listens on `127.0.0.1:9000` and passes the TCP stream to that address, so Prysm is configured as usual
+and TLS still terminates inside the remote signer. `SIGNER3_CERT` is that signer's certificate, taken
+from its attestation evidence; it replaces `signer-data/tls/cert.pem` for Prysm. `SIGNER3_LOG`, if set,
+is read for node3's counts in `summary` (for a guest, its serial log). `checks` only touch signer0.
+The full procedure is in [docs/hardware-runbook.md](../../docs/hardware-runbook.md#d-devnet-with-node3-signing-in-the-guest).
 
 ## Gloas
 

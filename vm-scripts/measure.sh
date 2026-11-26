@@ -1,4 +1,5 @@
 #!/bin/bash
+# SUPERSEDED by the mkosi image in image/ (see image/README.md). Kept for reference; do not use for keys.
 # Prints the expected SEV-SNP launch measurement of the guest that run.sh
 # starts: the OVMF from `make ovmf`, the UKI as -kernel with kernel-hashes=on,
 # no separate initrd or cmdline (the UKI carries both), 4 vCPUs of EPYC-v4.

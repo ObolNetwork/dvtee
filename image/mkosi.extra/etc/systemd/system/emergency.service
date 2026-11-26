@@ -1,0 +1,12 @@
+# Replaces the stock emergency.service: there is no shell in this image, so a
+# boot failure powers the guest off instead of offering a login.
+[Unit]
+Description=Power off instead of emergency mode
+DefaultDependencies=no
+SuccessAction=poweroff-force
+FailureAction=poweroff-force
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/echo "sev-signer: boot failed, powering off (no emergency shell in this image)"
+StandardOutput=journal+console

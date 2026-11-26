@@ -1,3 +1,4 @@
+# SUPERSEDED by the mkosi image in image/ (see image/README.md). Kept for reference.
 # Pinned by digest (multi-arch index for alpine 3.20.10); Dependabot keeps it current.
 # NOTE: Alpine 3.20 reached end of life on 2026-04-01 and no longer gets security
 # fixes. Moving the kernel builder to a supported branch needs the APKBUILD to be

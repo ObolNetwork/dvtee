@@ -44,6 +44,10 @@ hash. Change the vCPU count or type in run.sh and the measurement changes too.
 The kernel and initramfs are not reproducible yet (ROADMAP.md, finding 7), so a
 measurement is only as good as the UKI it was computed from.
 
+That script is for the old `vm-scripts/` image. For the mkosi image in `image/`, use
+`scripts/expected-measurement.sh` (`make image-measure`). It uses the same sev-snp-measure pin, with
+the launch parameters in `scripts/snp-params.env`.
+
 ## Licences
 
 edk2 is BSD-2-Clause-Patent. The firmware also links code from its submodules
