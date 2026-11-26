@@ -14,7 +14,7 @@ signers can compare designs. Nothing here has run on SEV-SNP hardware or been au
   with:
   * recomputed signing roots for every request type through Gloas, cross-checked against
     go-eth2-client with herumi BLS, the consensus spec tests and Web3Signer's own examples;
-  * durable EIP-3076 slashing protection;
+  * durable EIP-3076 slashing protection, checked against the EIP-3076 interchange tests;
   * TLS terminated inside the guest, plus optional pinned-cert mTLS;
   * a vendor-neutral attestation endpoint (configfs-tsm) that binds the evidence to the TLS key and the
     BLS key set.
@@ -82,7 +82,8 @@ reviewed at the same time and are superseded by `signer/`.
   rejected (mainnet, hoodi, sepolia, or custom).
 * **Policy.** Exits are allowed by default; deposits are denied by default.
 * **Slashing protection.** Per-key low watermarks, fsynced before the signature is released. Supports
-  EIP-3076 import at startup and `slashing-export`.
+  EIP-3076 import at startup and `slashing-export`. Passes the EIP-3076 interchange test suite
+  (v5.3.0, minimal strategy) in CI.
 * **Keystores.** Loads EIP-2335 keystores in charon's `validator_keys/` layout (scrypt and pbkdf2,
   NFKD password processing).
 * **TLS.** Rustls TLS inside the guest. The key is generated on first boot into the data directory, and

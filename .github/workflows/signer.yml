@@ -57,3 +57,17 @@ jobs:
         run: cargo test --locked --test spec_tests -- --nocapture
         env:
           SPEC_TESTS_DIR: ${{ github.workspace }}/signer/spec-tests
+      # EIP-3076 interchange tests: a small pinned archive, cached by script hash.
+      - name: Cache interchange tests
+        id: interchange-tests
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: signer/interchange-tests
+          key: interchange-tests-${{ hashFiles('signer/scripts/fetch-interchange-tests.sh') }}
+      - name: Fetch interchange tests
+        if: steps.interchange-tests.outputs.cache-hit != 'true'
+        run: scripts/fetch-interchange-tests.sh
+      - name: Interchange tests
+        run: cargo test --locked --test interchange_tests -- --nocapture
+        env:
+          INTERCHANGE_TESTS_DIR: ${{ github.workspace }}/signer/interchange-tests
