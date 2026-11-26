@@ -497,8 +497,11 @@ mod tests {
             Err(Error::Signature("delegation"))
         );
         // A response to another request (replay).
-        let req2 = request(&[8; 32], &s.public_key());
-        assert!(verify(&req2, &[8; 32], &resp, &s.public_key()).is_err());
+        let nonce2 = ring::rand::generate::<[u8; 32]>(&ring::rand::SystemRandom::new())
+            .unwrap()
+            .expose();
+        let req2 = request(&nonce2, &s.public_key());
+        assert!(verify(&req2, &nonce2, &resp, &s.public_key()).is_err());
         // No flipped byte changes the time. A few are harmless: they rename
         // the NONC or TYPE tag, which draft-11 responses lack, to an unknown
         // tag, which must be ignored.
