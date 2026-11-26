@@ -83,7 +83,7 @@ the request.
 
 | Method | Path | Notes |
 |--------|------|-------|
-| `POST` | `/api/v1/eth2/sign/{pubkey}` | Web3Signer request body. Returns `0x…` as text, or `{"signature"}` with `Accept: application/json`. Status codes: 400 invalid request, 403 blocked by policy, 404 unknown key, 412 slashing protection. |
+| `POST` | `/api/v1/eth2/sign/{pubkey}` | Web3Signer request body. Returns `0x…` as text, or `{"signature"}` with `Accept: application/json`. Status codes: 400 invalid request, 403 blocked by policy, 404 unknown key, 412 slashing protection or start floor, 503 waiting for trusted time. |
 | `GET` | `/api/v1/eth2/publicKeys` | |
 | `GET` | `/upcheck`, `/healthcheck` | |
 | `GET` | `/api/v1/tee/attestation?nonce=<32-byte hex>` | Raw configfs-tsm evidence, plus the TLS certificate, pubkeys and pinned cluster lock hash bound into REPORT_DATA. |
@@ -228,6 +228,38 @@ cargo build --features insecure-dev
   execution payload envelope is signed for that block.
 * **Import.** Import EIP-3076 history with `--slashing-protection-import file.json` at startup.
 * **Export.** Export it with `sev-signer slashing-export --data-dir … --network …`.
+
+### Anti-rollback: start floor and horizon
+
+The host can restore an old snapshot of the data disk, and with it old watermarks. The start floor
+makes that harmless using time instead of the disk (ROADMAP design choice 5). With `k` =
+`--anti-rollback-epochs` (default 1):
+
+* **Horizon.** Never sign a block or attestation more than `k` epochs ahead of trusted time.
+* **Floor.** After every start, refuse blocks up to the last slot of epoch `clock + k + 1`,
+  attestations with a target up to it, and attestations with a source before `clock + k`. Anything an
+  earlier run signed is below the floor, whatever the disk says. Nothing about the floor is stored.
+* **Cost.** About three epochs of missed blocks and attestations per restart, for this signer only.
+  Other request types are not affected. `k = 1` is the smallest value that keeps the current epoch
+  signable between readings; each extra epoch of `k` adds an epoch to the cost.
+* **Trusted time.** Roughtime: signed, nonce-bound timestamps from servers with pinned keys. Each
+  server is queried every quarter epoch, and `--roughtime-quorum` (default 3) of them must agree
+  within `--roughtime-tolerance` seconds (default 10). Until the first quorum answers, blocks and
+  attestations get 503. The guest's own clock only expires a reading after three quarters of an
+  epoch; it never moves the horizon forward. If the quorum stays unreachable, blocks and attestations
+  stop (503) until it answers again.
+* **Servers.** By default five independent operators: Cloudflare, int08h, roughtime.se, txryan.com
+  and Sturdy Statistics. Replace them with `--roughtime-server BASE64KEY@host:port` (repeat or
+  comma-separate). Draft-11 servers (Cloudflare) and draft-12-to-19 servers are supported. The guest
+  needs outbound UDP to them.
+* **Defaults.** On for mainnet, hoodi and sepolia (recognised by genesis validators root, which every
+  request is pinned to), off for devnets. A config.yaml with a public network's root keeps that
+  network's genesis time and slot length. `--anti-rollback false` is refused on a public network unless the
+  build has the `insecure-dev` feature. On a devnet, `--anti-rollback true` needs `--genesis-time`
+  (the beacon API's `/eth/v1/beacon/genesis`); the slot length comes from the config's
+  `SLOT_DURATION_MS` or `SECONDS_PER_SLOT`.
+* **Live check.** `cargo test --lib live_roughtime -- --ignored --nocapture` queries the default
+  servers and verifies every response.
 
 ## Tests
 

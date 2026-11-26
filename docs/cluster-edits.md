@@ -221,10 +221,12 @@ one takes effect at once.
   every proposal, up to `clock_epoch + k + 1`. Anything it could have signed before the restart is below
   that floor, so an old watermark can't lead to a double vote. The cost is about three epochs of missed
   duties per restart for this one signer, which the cluster covers.
-  - Trusted time in an on-prem guest: a quorum of Roughtime servers run by independent operators, reached
-    over the host's network. The host can delay or block it, which stops signing, but can't forge it.
-    Signed timestamps from the other signers in the cluster are a later alternative that needs no
-    outside servers.
+  - Trusted time: a quorum of Roughtime servers with pinned keys, over the host's network, which the
+    host can delay but not forge (built, see [`signer/README.md`](../signer/README.md#anti-rollback-start-floor-and-horizon)).
+    A delayed answer only makes the floor higher. Signed timestamps from the other signers in the
+    cluster are an alternative that needs no outside servers.
+  - The floor also refuses votes whose source is before `clock_epoch + k`, so a restored watermark
+    can't let a new vote surround an old one.
 - **Reshare and rollback together.** tee-signer's documentation points out the dangerous case: after a
   reshare that retires old shares, a guest whose disk is rolled back to its old share brings that share
   back, and an attacker holding `t - 1` other old shares completes a signature. The tombstone and the
@@ -292,7 +294,7 @@ list collects what each side needs, for whoever designs and builds it.
    validator exits, independently of its operators. Supporting that needs an exit authorisation the guest
    checks (for example a signed request from that protocol's exit mechanism), separate from operator
    orders. Not designed yet.
-2. **Trusted time from peers** as an alternative to the Roughtime quorum.
+2. **A second trusted time source** for the start floor: peer timestamps, next to Roughtime.
 3. **Peer attestation in charon** (design choice 4), which the ceremony key binding depends on.
 4. **Spec and vectors** in distributed-validator-specs for `recover`, the order format, and reshare test
    vectors, which don't exist today.

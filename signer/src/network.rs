@@ -11,6 +11,9 @@ pub const SLOTS_PER_EPOCH: u64 = 32;
 
 pub const FAR_FUTURE_EPOCH: u64 = u64::MAX;
 
+/// Slot duration of every preset network.
+pub const DEFAULT_SLOT_DURATION_MS: u64 = 12_000;
+
 /// Consensus forks, in activation order.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum ForkName {
@@ -83,6 +86,12 @@ pub struct Network {
     /// (`custom:`), in which case fork-dependent checks fall back to what the
     /// request says and Gloas-only request types are refused.
     pub forks: Vec<ScheduledFork>,
+    /// Unix time of slot 0. Known for presets; a config.yaml or `custom:`
+    /// network gets it from `--genesis-time`. Only the start floor uses it.
+    pub genesis_time: Option<u64>,
+    /// `SLOT_DURATION_MS` (or `SECONDS_PER_SLOT`). Assumed constant: no
+    /// supported fork changes it.
+    pub slot_duration_ms: u64,
 }
 
 impl Network {
@@ -101,6 +110,33 @@ impl Network {
 
     pub fn has_schedule(&self) -> bool {
         !self.forks.is_empty()
+    }
+
+    /// The epoch at Unix time `t`, or 0 before genesis. `None` without a
+    /// genesis time.
+    pub fn epoch_at_time(&self, t: u64) -> Option<u64> {
+        let genesis = self.genesis_time?;
+        let ms = t.saturating_sub(genesis).saturating_mul(1000);
+        Some(ms / self.slot_duration_ms / SLOTS_PER_EPOCH)
+    }
+
+    /// One epoch, in milliseconds.
+    pub fn epoch_duration_ms(&self) -> u64 {
+        self.slot_duration_ms * SLOTS_PER_EPOCH
+    }
+
+    /// The public network (mainnet, hoodi, sepolia) with this genesis
+    /// validators root, if any. Every request is pinned to the configured
+    /// root, and signatures are bound to it, so a `custom:` or config.yaml
+    /// network with another root can't sign for a public network.
+    pub fn public_preset(&self) -> Option<Network> {
+        Network::presets()
+            .into_iter()
+            .find(|p| p.genesis_validators_root == self.genesis_validators_root)
+    }
+
+    pub fn is_public(&self) -> bool {
+        self.public_preset().is_some()
     }
 
     /// Builds a network from a standard consensus-layer `config.yaml` (the
@@ -152,6 +188,14 @@ impl Network {
         };
 
         let genesis = version("GENESIS_FORK_VERSION")?.ok_or("GENESIS_FORK_VERSION missing")?;
+        let slot_duration_ms = match (epoch("SLOT_DURATION_MS")?, epoch("SECONDS_PER_SLOT")?) {
+            (Some(ms), _) => ms,
+            (None, Some(s)) => s.saturating_mul(1000),
+            (None, None) => DEFAULT_SLOT_DURATION_MS,
+        };
+        if slot_duration_ms == 0 {
+            return Err("slot duration must not be zero".into());
+        }
         let mut forks = vec![ScheduledFork {
             name: ForkName::Phase0,
             version: genesis,
@@ -185,6 +229,8 @@ impl Network {
             genesis_fork_version: genesis,
             capella_fork_version: forks[ForkName::Capella as usize].version,
             forks,
+            genesis_time: None,
+            slot_duration_ms,
         };
         net.validate_schedule()?;
 
@@ -233,7 +279,7 @@ impl Network {
 /// (version, epoch) per fork from Altair to Gloas.
 type Schedule = [([u8; 4], u64); 7];
 
-fn net(name: &str, gvr: &str, genesis: [u8; 4], schedule: Schedule) -> Network {
+fn net(name: &str, gvr: &str, genesis_time: u64, genesis: [u8; 4], schedule: Schedule) -> Network {
     let mut root = [0u8; 32];
     hex::decode_to_slice(gvr, &mut root).expect("static genesis validators root");
     let mut forks = vec![ScheduledFork {
@@ -254,6 +300,8 @@ fn net(name: &str, gvr: &str, genesis: [u8; 4], schedule: Schedule) -> Network {
         genesis_fork_version: genesis,
         capella_fork_version: forks[ForkName::Capella as usize].version,
         forks,
+        genesis_time: Some(genesis_time),
+        slot_duration_ms: DEFAULT_SLOT_DURATION_MS,
     };
     n.validate_schedule().expect("static schedule");
     n
@@ -261,13 +309,15 @@ fn net(name: &str, gvr: &str, genesis: [u8; 4], schedule: Schedule) -> Network {
 
 impl Network {
     /// Fork schedules from eth-clients/{hoodi,sepolia} metadata/config.yaml
-    /// and consensus-specs configs/mainnet.yaml (2026-11).
+    /// and consensus-specs configs/mainnet.yaml (2026-11). Genesis times as
+    /// served by the beacon API's /eth/v1/beacon/genesis.
     pub fn presets() -> Vec<Network> {
         const FAR: u64 = FAR_FUTURE_EPOCH;
         vec![
             net(
                 "mainnet",
                 "4b363db94e286120d76eb905340fdd4e54bfe9f06bf33ff6cf5ad27f511bfe95",
+                1606824023,
                 [0x00, 0x00, 0x00, 0x00],
                 [
                     ([0x01, 0, 0, 0], 74240),
@@ -282,6 +332,7 @@ impl Network {
             net(
                 "hoodi",
                 "212f13fc4df078b6cb7db228f1c8307566dcecf900867401a92023d7ba99cb5f",
+                1742213400,
                 [0x10, 0x00, 0x09, 0x10],
                 [
                     ([0x20, 0x00, 0x09, 0x10], 0),
@@ -297,6 +348,7 @@ impl Network {
             net(
                 "sepolia",
                 "d8ea171f3c94aea21ebc42a1ed61052acf3f9209c00e4efbaaddac09ed9b8078",
+                1655733600,
                 [0x90, 0x00, 0x00, 0x69],
                 [
                     ([0x90, 0x00, 0x00, 0x70], 50),
@@ -337,6 +389,8 @@ impl FromStr for Network {
                 genesis_fork_version: [0; 4],
                 capella_fork_version: [0; 4],
                 forks: Vec::new(),
+                genesis_time: None,
+                slot_duration_ms: DEFAULT_SLOT_DURATION_MS,
             };
             let strip = |p: &str| p.trim_start_matches("0x").to_string();
             hex::decode_to_slice(strip(parts[2]), &mut n.genesis_fork_version)
@@ -434,5 +488,43 @@ BLOB_SCHEDULE:
         assert!(Network::from_config_yaml(&unknown_fork, [7; 32]).is_err());
         let out_of_order = KURTOSIS_LIKE.replace("FULU_FORK_EPOCH: 0", "FULU_FORK_EPOCH: 3");
         assert!(Network::from_config_yaml(&out_of_order, [7; 32]).is_err());
+    }
+
+    #[test]
+    fn slot_timing() {
+        let n = Network::from_config_yaml(KURTOSIS_LIKE, [7; 32]).unwrap();
+        assert_eq!(n.slot_duration_ms, DEFAULT_SLOT_DURATION_MS);
+        assert_eq!(n.epoch_at_time(1_000), None);
+        let cfg = format!("{KURTOSIS_LIKE}SECONDS_PER_SLOT: 6\n");
+        assert_eq!(
+            Network::from_config_yaml(&cfg, [7; 32])
+                .unwrap()
+                .slot_duration_ms,
+            6000
+        );
+        // SLOT_DURATION_MS wins over SECONDS_PER_SLOT.
+        let cfg = format!("{cfg}SLOT_DURATION_MS: 4000\n");
+        let mut n = Network::from_config_yaml(&cfg, [7; 32]).unwrap();
+        assert_eq!(n.slot_duration_ms, 4000);
+        n.genesis_time = Some(1_000);
+        assert_eq!(n.epoch_at_time(0), Some(0)); // before genesis
+        assert_eq!(n.epoch_at_time(1_000 + 127), Some(0));
+        assert_eq!(n.epoch_at_time(1_000 + 128), Some(1));
+
+        let mainnet: Network = "mainnet".parse().unwrap();
+        // Slot 32 * 411392 (Fulu) started at 2025-12-03 21:49:11 UTC.
+        assert_eq!(mainnet.epoch_at_time(1764798551), Some(411392));
+        assert_eq!(mainnet.epoch_at_time(1764798550), Some(411391));
+        assert!(mainnet.is_public());
+        assert!(!n.is_public());
+        let mut custom_mainnet = format!(
+            "custom:0x{}:0x00000000:0x04000000",
+            hex::encode(mainnet.genesis_validators_root)
+        )
+        .parse::<Network>()
+        .unwrap();
+        assert_eq!(custom_mainnet.public_preset().unwrap().name, "mainnet");
+        custom_mainnet.genesis_validators_root = [0x11; 32];
+        assert!(!custom_mainnet.is_public());
     }
 }
