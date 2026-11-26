@@ -60,11 +60,13 @@ order = {
 - **What the guest checks.** The lock hash matches the lock it was provisioned with, its own share index
   is a participant, `run_id` is new to it, `not_after` is in the future, and the kind-specific rules below.
 - **New measurements.** An order that hands a share to a guest (recover, or a new participant in a
-  reshare) names the measurement that guest must have. A measurement is accepted when it carries the
-  release signature of the sev-signer maintainers and the order is signed by `t` operators, and only
-  after a delay from when it was first approved. An order signed by all `n` operators may skip the
-  release signature, for when the maintainers are unavailable or untrusted. Reproducible builds let
-  anyone check a measurement against the source.
+  reshare) names the measurement that guest must have. The operators approve it, nobody else: no
+  maintainer, vendor or staking protocol holds a key that can admit an image. Signed, reproducible
+  releases help each operator decide what to sign (rebuild, compare the measurement, then sign), but
+  they gate nothing inside the guest. A new measurement takes effect only after a delay from when
+  the order reached `t` signatures, measured on the guest's trusted clock, so other operators can
+  object (by withholding their part of the ceremony) before any piece moves. An order signed by all `n`
+  operators may skip the delay.
 - **Ceremony keys.** Every participant that holds a share in a guest has a per-ceremony encryption key
   generated inside the guest (`ceremony_key`). Pieces are encrypted to these keys with HPKE (RFC 9180),
   with the order hash, sender and recipient as associated data.
@@ -189,17 +191,20 @@ New validators need fresh keys, which is a DKG, not an edit of existing shares:
 ## Provisioning-time settings
 
 Some behaviour is useful to some clusters and dangerous to others. It is chosen once, when the guest is
-provisioned, stored on the sealed disk, and its hash is included in the attestation evidence so peers
-and verifiers can see it:
+provisioned, stored on the sealed disk, and bound into the attestation evidence so peers and verifiers
+can see it:
 
-- runtime deposits (off by default; needed where the depositor is not known at key generation);
-- runtime fee recipient changes for builder registrations and Gloas proposer preferences (off: the fee
-  recipient comes from the lock);
-- voluntary exits (on by default, for clients with the exit role only; ROADMAP design choice 9).
+- **Fee recipient: from the cluster lock, and never changed at runtime** (built: `--cluster-lock`). The
+  signer pins the lock and refuses registrations, proposer preferences and self-built payloads with
+  another fee recipient. A different fee recipient means a new lock, and a new lock means new shares: a
+  reshare into fresh guests. Charon's runtime proposer configuration does not apply to a pinned signer.
+- **Runtime deposits:** off by default. They are needed where the depositor isn't known at key
+  generation.
+- **Voluntary exits:** on, for clients with the exit role only (built; ROADMAP design choice 9).
 
-Turning one of these on later takes a ceremony order of kind `settings`, signed by a threshold of
-operators. Following tee-signer's practice, a loosening change should only take effect after a delay, so
-operators can notice it, while a tightening one takes effect at once.
+Turning runtime deposits on later takes a ceremony order of kind `settings`, signed by a threshold of
+operators. A loosening change takes effect only after a delay, so operators can notice it. A tightening
+one takes effect at once.
 
 ## State: watermarks, rollback and power cycles
 
@@ -216,14 +221,62 @@ operators can notice it, while a tightening one takes effect at once.
   every proposal, up to `clock_epoch + k + 1`. Anything it could have signed before the restart is below
   that floor, so an old watermark can't lead to a double vote. The cost is about three epochs of missed
   duties per restart for this one signer, which the cluster covers.
-  - Trusted time in an on-prem guest: NTS (authenticated NTP) over the host's network, which the host can
-    delay but not forge. Signed timestamps from the other signers in the cluster are an alternative that
-    needs no outside servers.
+  - Trusted time in an on-prem guest: a quorum of Roughtime servers run by independent operators, reached
+    over the host's network. The host can delay or block it, which stops signing, but can't forge it.
+    Signed timestamps from the other signers in the cluster are a later alternative that needs no
+    outside servers.
 - **Reshare and rollback together.** tee-signer's documentation points out the dangerous case: after a
   reshare that retires old shares, a guest whose disk is rolled back to its old share brings that share
   back, and an attacker holding `t - 1` other old shares completes a signature. The tombstone and the
   share generation number must therefore be part of what rollback protection covers, not only the
   watermarks.
+
+## Requirements for `charon edit recover`
+
+Recover is the planned path for both a dead machine and an image upgrade, such as a new sev-signer
+release for a hard fork. The signer side is small. Most of the work is in charon and the specs. This
+list collects what each side needs, for whoever designs and builds it.
+
+**Specs (distributed-validator-specs)**
+- The order format above, its canonical encoding and hash, and how operators sign it (ENR keys, as for
+  lock node signatures).
+- The recover protocol, with test vectors: Lagrange coefficients over `H` at `r`, the split of `δ_i`, the
+  sums, the public-share check, and failure cases (missing or wrong piece, `r` in `H`, `|H| < t`,
+  duplicate indices).
+- The HPKE suite and associated data, and the message formats between helpers and the target.
+
+**charon**
+- `charon edit recover`: create an order (target index, helpers, the target's ceremony key and
+  measurement), collect operator signatures, run the two helper rounds over the existing p2p
+  transport, deliver the target's pieces, and report success only after the target's public-share check.
+- Peer attestation (design choice 4): fetch each participant's evidence, check the AMD chain, the
+  measurement named in the order, and the ceremony key in REPORT_DATA, and refuse to sign otherwise.
+- Nothing in charon ever sees a share or a piece in plaintext. Pieces are opaque, encrypted blobs between
+  guests.
+- Works with keystores too, so non-TEE nodes can recover a lost disk the same way.
+- A runbook for a fork upgrade: every operator moves to the new image one recover at a time (or one batch
+  with all new guests as targets), keeping the cluster at threshold. With `n - t = 1` (3 of 4), only
+  one guest may be down at a time.
+
+**sev-signer (guest)**
+- A ceremony API on its own listener, behind its own client role (`ceremony`), for charon only.
+- Check the order: `t` distinct operator signatures against the pinned lock, own index, fresh `run_id`,
+  `not_after`, and the delay for a new measurement on trusted time.
+- A per-ceremony key generated in the guest and bound into REPORT_DATA.
+- Helper steps 1 and 2, target combine and public-share check, and sealing of the new shares.
+- Carry slashing watermarks in the step-2 messages and start from the highest. This needs watermarks
+  keyed by validator, not by share pubkey (a recovered share has the same pubkey, a reshared one does
+  not).
+- Apply the start floor after a recover, as after any start.
+- Retire: a tombstone for the old guest when it is still reachable, covered by the same rollback
+  protection as the watermarks.
+
+**Open questions for the design**
+- Do helper guests also verify the target's attestation themselves, or rely on charon's check? Doing it
+  in the guest raises the bar from `t` compromised hosts to `t` compromised hosts plus a forged report,
+  at the cost of an attestation verifier inside the guest.
+- How long is the measurement delay, and does it apply to recovery onto the same measurement (a dead
+  machine) or only to a new one?
 
 ## What each attacker can do
 
@@ -239,7 +292,7 @@ operators can notice it, while a tightening one takes effect at once.
    validator exits, independently of its operators. Supporting that needs an exit authorisation the guest
    checks (for example a signed request from that protocol's exit mechanism), separate from operator
    orders. Not designed yet.
-2. **Trusted time source** for the start floor: NTS or peer timestamps.
+2. **Trusted time from peers** as an alternative to the Roughtime quorum.
 3. **Peer attestation in charon** (design choice 4), which the ceremony key binding depends on.
 4. **Spec and vectors** in distributed-validator-specs for `recover`, the order format, and reshare test
    vectors, which don't exist today.
