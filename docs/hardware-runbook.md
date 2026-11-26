@@ -165,7 +165,7 @@ NONCE=$(openssl rand -hex 32)
 curl -sk "https://127.0.0.1:19001/api/v1/tee/attestation?nonce=$NONCE" > evidence.json
 M_DISC=$(jq -r .measurement $RUN/expected-discovery.json)
 $S verify-evidence --evidence evidence.json --nonce $NONCE --expected-measurement $M_DISC \
-    | tee verify-evidence.txt
+    --fetch-vcek | tee verify-evidence.txt
 $R/scripts/snp-report-fields.py evidence.json | tee report-fields.txt
 jq -r .tls_certificate evidence.json > cert.pem
 curl -sf --cacert cert.pem https://127.0.0.1:19001/upcheck && echo PINNED
@@ -175,12 +175,15 @@ curl -sf --cacert cert.pem https://127.0.0.1:19001/upcheck && echo PINNED
   * provider `sev_guest`;
   * `report_data binding: OK`;
   * `debug policy: OK`;
-  * `measurement: OK`.
+  * `measurement: OK`;
+  * the VCEK chain to AMD's pinned root and the report signature: OK.
 * **The `-k` on the first fetch** is trust on first use. The binding check is what ties `cert.pem`
   to this report.
-* **AMD chain.** `verify-evidence` is being extended to verify the AMD chain (ARK, ASK, VCEK) and the
-  report signature. If the build under test has that, run it with the chain flags from
-  `$S verify-evidence --help` and record the output. Either way, also check with snpguest:
+* **AMD chain.** `verify-evidence` checks the report signature with the VCEK, and the VCEK against
+  AMD's pinned roots (Milan, Genoa, Turin). The VCEK comes from the evidence's certificate table when
+  the host provides one, else from AMD's KDS (`--fetch-vcek`). KDS rate limits: on a 429, retry later
+  or pass `--vcek certs/vcek.pem` from the snpguest step below. Also check with snpguest, as an
+  independent second opinion:
 
 ```sh
 jq -r .report evidence.json | sed 's/^0x//' | xxd -r -p > report.bin
@@ -222,7 +225,7 @@ $R/scripts/launch-snp-guest.sh --data data.img --provision prov.img --serial-log
 
 When `sev-signer serving` appears:
 
-1. Repeat the attestation block from section 3 with `$M`.
+1. Repeat the attestation block from section 3 with `$M`, adding `--min-tcb $MIN_TCB`.
 2. Then sign. The guest runs on Hoodi with the start floor on, so the test vector's old epoch is
    refused. Sign live instead, against a reference signer on the host: the same keystore, an
    insecure-dev build, and the floor off.
@@ -325,15 +328,17 @@ cd $RUN/rel; sha256sum data.img > data.sha256
   (`dd if=/dev/urandom of=data.img bs=4096 count=1 seek=16384 conv=notrunc`), then launch.
   dm-integrity should turn reads of that sector into I/O errors, not silent corruption. Record what
   happens, then restore the copy.
-* **c7 rollback (the known gap).** Start from a fresh release guest:
+* **c7 rollback (the start floor). Pass/fail, though listed here.** Start from a fresh release
+  guest, with the live-mode settings from section 4:
   1. provision it;
   2. stop it and copy `data.img` to `data.before`;
   3. relaunch, run `first` (200), then stop it;
   4. put `data.before` back and relaunch;
   5. run `conflict`.
 
-  It is expected to return **200**: the rolled-back disk has no watermark. That is ROADMAP design
-  choice 5 (start floor). Record it as evidence for that work.
+  The rolled-back disk has no watermark for that epoch, so slashing protection alone would sign. It
+  is expected to return **412 with "start floor" in the body**: the new boot's floor, from trusted
+  time, is past the signed epoch. A 200 is a failure. Record the floor epoch from the serial log.
 
 ## 7. Devnet with node3 signing in the guest (test d)
 
@@ -417,7 +422,7 @@ Put commands' raw output in the raw directory, not just conclusions.
 * Serial logs for every boot: discovery, release first boot, 5.1, 5.2, 5.3, and each negative test.
 * `sign-check.sh` output for each step of section 5.
 * A table for tests c1 to c5: expected measurement, outcome, and whether `data.img` was unchanged.
-  Notes on c6 and c7 if you ran them.
+  Notes on c6 if you ran it, and the c7 result.
 * Devnet: `summary.txt`, `checks.txt`, node3's counts and the guest serial log.
 
 **Other:**
