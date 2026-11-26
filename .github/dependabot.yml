@@ -6,10 +6,35 @@ updates:
     interval: "daily"
   cooldown:
     default-days: 7
+  # A dependency goes to the first group that matches it; one that matches
+  # none gets a PR of its own. Patch bumps of ordinary crates come together.
+  # Minor and major bumps come one per PR: a 0.x minor (axum-server 0.8 to
+  # 0.9) is a breaking change. The exactly pinned crypto crates (Cargo.toml)
+  # always come one per PR, except the RustCrypto family, which shares
+  # traits (digest, cipher) and has to move together.
   groups:
-    cargo-dependencies:
+    rustcrypto:
+      patterns:
+        - "aes"
+        - "ctr"
+        - "hmac"
+        - "pbkdf2"
+        - "scrypt"
+        - "sha2"
+    cargo-patch:
       patterns:
         - "*"
+      exclude-patterns:
+        - "blst"
+        - "rcgen"
+        - "ring"
+        - "rustls"
+        - "rustls-native-certs"
+        - "unicode-normalization"
+        - "x509-cert"
+        - "zeroize"
+      update-types:
+        - "patch"
 - package-ecosystem: "gomod"
   directory: "/signer/tests/vecgen"
   schedule:
