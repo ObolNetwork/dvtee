@@ -27,7 +27,16 @@ use sha2::{Digest, Sha256, Sha512};
 const TSM_REPORT_DIR: &str = "/sys/kernel/config/tsm/report";
 const BINDING_DOMAIN: &[u8] = b"obol-sev-signer/attestation/v1";
 
-pub fn report_data(nonce: &[u8; 32], tls_cert_der: &[u8], pubkeys: &[[u8; 48]]) -> [u8; 64] {
+/// REPORT_DATA: SHA-512 over the domain, the verifier's nonce, the TLS
+/// certificate's hash, the hash of the sorted BLS key set and, when the
+/// signer is pinned to a cluster lock, a tag and the lock hash (without one,
+/// the bytes are the same as before locks were pinned).
+pub fn report_data(
+    nonce: &[u8; 32],
+    tls_cert_der: &[u8],
+    pubkeys: &[[u8; 48]],
+    cluster_lock_hash: Option<&[u8; 32]>,
+) -> [u8; 64] {
     let mut sorted = pubkeys.to_vec();
     sorted.sort();
     let mut pk_hash = Sha256::new();
@@ -40,6 +49,10 @@ pub fn report_data(nonce: &[u8; 32], tls_cert_der: &[u8], pubkeys: &[[u8; 48]]) 
     h.update(nonce);
     h.update(Sha256::digest(tls_cert_der));
     h.update(pk_hash.finalize());
+    if let Some(lock_hash) = cluster_lock_hash {
+        h.update(b"cluster-lock");
+        h.update(lock_hash);
+    }
     h.finalize().into()
 }
 

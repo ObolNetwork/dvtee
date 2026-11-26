@@ -1,6 +1,8 @@
 pub mod api;
 pub mod keystore;
+pub mod lock;
 pub mod network;
+pub mod pins;
 pub mod platform;
 pub mod signing;
 pub mod slashing;

@@ -8,6 +8,7 @@ use sha2::{Digest, Sha256};
 
 use sev_signer::api::{self, AppState};
 use sev_signer::network::{self, Network};
+use sev_signer::pins::Pins;
 use sev_signer::platform::{PlatformArgs, SnpKeyParams};
 use sev_signer::signing::Policy;
 use sev_signer::slashing::SlashingDb;
@@ -68,6 +69,10 @@ enum Cmd {
         /// Expected launch measurement, hex (from sev-snp-measure / MRTD).
         #[arg(long)]
         expected_measurement: Option<String>,
+        /// Expected cluster lock hash, hex: the signer must be pinned to this
+        /// lock (compare with your own cluster-lock.json's lock_hash).
+        #[arg(long)]
+        expected_cluster_lock_hash: Option<String>,
         /// Accept `insecure_dev` evidence (development and e2e tests only).
         #[arg(long)]
         allow_insecure_dev: bool,
@@ -153,6 +158,14 @@ struct ServeArgs {
     allow_voluntary_exits: bool,
     #[arg(long, env = "SEV_SIGNER_ALLOW_DEPOSITS", default_value_t = false, action = clap::ArgAction::Set)]
     allow_deposits: bool,
+    /// Charon cluster-lock.json to pin on first start. The signer checks it,
+    /// requires every loaded key to be one of its public shares (at one
+    /// operator index), stores it in the data directory and from then on
+    /// refuses any other lock. Fee recipients in registrations, proposer
+    /// preferences and self-built payloads must match it. Optional once
+    /// pinned.
+    #[arg(long, env = "SEV_SIGNER_CLUSTER_LOCK")]
+    cluster_lock: Option<PathBuf>,
     /// EIP-3076 interchange file to import before serving.
     #[arg(long, env = "SEV_SIGNER_SLASHING_PROTECTION_IMPORT")]
     slashing_protection_import: Option<PathBuf>,
@@ -199,11 +212,13 @@ fn main() -> anyhow::Result<()> {
             evidence,
             nonce,
             expected_measurement,
+            expected_cluster_lock_hash,
             allow_insecure_dev,
         } => verify_evidence(
             &evidence,
             &nonce,
             expected_measurement.as_deref(),
+            expected_cluster_lock_hash.as_deref(),
             allow_insecure_dev,
         ),
     }
@@ -241,6 +256,21 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         bail!("no keystores found in {}", args.keystores_dir.display());
     }
 
+    let key_list: Vec<[u8; 48]> = keys.keys().copied().collect();
+    let pins = Pins::load_or_pin(&args.data_dir, args.cluster_lock.as_deref(), &key_list)?;
+    match &pins {
+        Some(p) => tracing::info!(
+            lock_hash = %format!("0x{}", hex::encode(p.lock_hash)),
+            operator_index = p.operator_index,
+            validators = p.validators,
+            "pinned to cluster lock: fee recipients are fixed"
+        ),
+        None if platform.is_insecure() => {}
+        None => tracing::warn!(
+            "no cluster lock pinned (--cluster-lock): fee recipients are not checked"
+        ),
+    }
+
     let db = SlashingDb::open(
         &args.data_dir.join("slashing"),
         network.genesis_validators_root,
@@ -273,6 +303,8 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
             .as_ref()
             .map(|m| (m.cert_der.clone(), m.cert_pem.clone())),
         platform,
+        pins,
+        roles: tls.as_ref().and_then(|m| m.roles.clone()),
     });
     let app = api::router(state.clone()).layer(tower_http::trace::TraceLayer::new_for_http());
 
@@ -319,13 +351,11 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
                     }
                 });
             }
-            axum_server::bind_rustls(
-                args.listen,
-                axum_server::tls_rustls::RustlsConfig::from_config(m.config),
-            )
-            .handle(handle)
-            .serve(app.into_make_service())
-            .await?
+            axum_server::bind(args.listen)
+                .acceptor(tls::IdentifyingAcceptor::new(m.config))
+                .handle(handle)
+                .serve(app.into_make_service())
+                .await?
         }
         None => {
             axum_server::bind(args.listen)
@@ -376,6 +406,7 @@ fn verify_evidence(
     path: &std::path::Path,
     nonce: &str,
     expected: Option<&str>,
+    expected_lock_hash: Option<&str>,
     allow_insecure_dev: bool,
 ) -> anyhow::Result<()> {
     use rustls::pki_types::pem::PemObject;
@@ -405,9 +436,18 @@ fn verify_evidence(
         })
         .collect::<anyhow::Result<_>>()?;
 
+    let lock_hash: Option<[u8; 32]> = match ev["cluster_lock_hash"].as_str() {
+        Some(h) => Some(
+            unhex(h)?
+                .try_into()
+                .map_err(|_| anyhow::anyhow!("cluster_lock_hash must be 32 bytes"))?,
+        ),
+        None => None,
+    };
+
     let layout =
         tee::layout(provider).with_context(|| format!("unsupported provider {provider}"))?;
-    let expected_rd = tee::report_data(&nonce, &cert, &pubkeys);
+    let expected_rd = tee::report_data(&nonce, &cert, &pubkeys, lock_hash.as_ref());
     let actual_rd = report
         .get(layout.report_data..layout.report_data + 64)
         .context("report too short")?;
@@ -424,6 +464,10 @@ fn verify_evidence(
         hex::encode(Sha256::digest(&cert))
     );
     println!("bls pubkeys:         {}", pubkeys.len());
+    match &lock_hash {
+        Some(h) => println!("cluster lock hash:   0x{}", hex::encode(h)),
+        None => println!("cluster lock hash:   none (signer not pinned to a lock)"),
+    }
     println!(
         "{:<20} {measurement}",
         format!("{}:", layout.measurement_name)
@@ -472,6 +516,16 @@ fn verify_evidence(
         }
     } else {
         println!("measurement:         not checked (pass --expected-measurement)");
+    }
+    if let Some(exp) = expected_lock_hash {
+        let exp = exp.trim_start_matches("0x").to_ascii_lowercase();
+        match &lock_hash {
+            Some(h) if hex::encode(h) == exp => println!("cluster lock:        OK"),
+            _ => {
+                println!("cluster lock:        MISMATCH (expected 0x{exp})");
+                ok = false;
+            }
+        }
     }
     println!(
         "\nNOTE: the report's hardware signature is NOT verified here. Verify it with\n\

@@ -6,9 +6,14 @@
 //! `tee.rs`.
 //!
 //! Optional mutual TLS pins client certificates by SHA-256 fingerprint,
-//! the same model as Web3Signer's `knownClients` file.
+//! the same model as Web3Signer's `knownClients` file. An optional third
+//! column grants each certificate roles (see [`Role`]); the signing listener
+//! tags every request with the client's fingerprint so the API can check them.
 
+use std::collections::BTreeMap;
+use std::future::Future;
 use std::path::Path;
+use std::pin::Pin;
 use std::sync::Arc;
 
 use anyhow::Context;
@@ -29,7 +34,61 @@ pub struct Material {
     pub public_config: Arc<ServerConfig>,
     pub cert_der: Vec<u8>,
     pub cert_pem: String,
+    /// Roles per pinned client certificate, when known clients are set.
+    pub roles: Option<KnownRoles>,
 }
+
+/// What a client certificate may ask the signer to sign.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Role {
+    /// Validator duties: attestations, blocks, aggregation, sync committee,
+    /// RANDAO, registrations and Gloas duties.
+    Duties,
+    /// `VOLUNTARY_EXIT`.
+    Exit,
+    /// `DEPOSIT` (also needs `--allow-deposits`).
+    Deposit,
+}
+
+impl Role {
+    fn parse(s: &str) -> Option<Self> {
+        match s {
+            "duties" => Some(Self::Duties),
+            "exit" => Some(Self::Exit),
+            "deposit" => Some(Self::Deposit),
+            _ => None,
+        }
+    }
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Duties => "duties",
+            Self::Exit => "exit",
+            Self::Deposit => "deposit",
+        }
+    }
+}
+
+/// Roles granted to each pinned client certificate, by SHA-256 fingerprint.
+#[derive(Clone, Debug, Default)]
+pub struct KnownRoles(BTreeMap<[u8; 32], Vec<Role>>);
+
+impl KnownRoles {
+    pub fn allows(&self, fingerprint: &[u8; 32], role: Role) -> bool {
+        self.0.get(fingerprint).is_some_and(|r| r.contains(&role))
+    }
+}
+
+/// Reads the roles from a known clients file (the same parsing the TLS
+/// verifier uses).
+pub fn known_roles(path: &Path) -> anyhow::Result<KnownRoles> {
+    Ok(PinnedClients::load(path)?.roles)
+}
+
+/// The client certificate fingerprint of a connection on the signing
+/// listener (`None` without mutual TLS).
+#[derive(Clone, Copy, Debug)]
+pub struct ClientFingerprint(pub Option<[u8; 32]>);
 
 fn provider() -> Arc<CryptoProvider> {
     Arc::new(rustls::crypto::ring::default_provider())
@@ -61,9 +120,16 @@ pub fn load_or_generate(
 
     let builder =
         ServerConfig::builder_with_provider(provider()).with_safe_default_protocol_versions()?;
-    let builder = match known_clients {
-        Some(path) => builder.with_client_cert_verifier(Arc::new(PinnedClients::load(path)?)),
-        None => builder.with_no_client_auth(),
+    let (builder, roles) = match known_clients {
+        Some(path) => {
+            let pinned = PinnedClients::load(path)?;
+            let roles = pinned.roles.clone();
+            (
+                builder.with_client_cert_verifier(Arc::new(pinned)),
+                Some(roles),
+            )
+        }
+        None => (builder.with_no_client_auth(), None),
     };
     let mut config = builder.with_single_cert(vec![cert.clone()], key.clone_key())?;
     config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
@@ -79,7 +145,52 @@ pub fn load_or_generate(
         public_config: Arc::new(public_config),
         cert_der: cert.to_vec(),
         cert_pem,
+        roles,
     })
+}
+
+/// A rustls acceptor that tags each connection's requests with the client
+/// certificate's fingerprint ([`ClientFingerprint`]).
+#[derive(Clone)]
+pub struct IdentifyingAcceptor(axum_server::tls_rustls::RustlsAcceptor);
+
+impl IdentifyingAcceptor {
+    pub fn new(config: Arc<ServerConfig>) -> Self {
+        Self(axum_server::tls_rustls::RustlsAcceptor::new(
+            axum_server::tls_rustls::RustlsConfig::from_config(config),
+        ))
+    }
+}
+
+impl<I, S> axum_server::accept::Accept<I, S> for IdentifyingAcceptor
+where
+    I: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send + 'static,
+    S: Send + 'static,
+{
+    type Stream = tokio_rustls::server::TlsStream<I>;
+    type Service = tower_http::add_extension::AddExtension<S, ClientFingerprint>;
+    type Future =
+        Pin<Box<dyn Future<Output = std::io::Result<(Self::Stream, Self::Service)>> + Send>>;
+
+    fn accept(&self, stream: I, service: S) -> Self::Future {
+        let inner = self.0.clone();
+        Box::pin(async move {
+            let (stream, service) = inner.accept(stream, service).await?;
+            let fingerprint = stream
+                .get_ref()
+                .1
+                .peer_certificates()
+                .and_then(|c| c.first())
+                .map(|c| Sha256::digest(c.as_ref()).into());
+            Ok((
+                stream,
+                tower_http::add_extension::AddExtension::new(
+                    service,
+                    ClientFingerprint(fingerprint),
+                ),
+            ))
+        })
+    }
 }
 
 fn write_private(path: &Path, data: &[u8]) -> std::io::Result<()> {
@@ -97,10 +208,19 @@ fn write_private(path: &Path, data: &[u8]) -> std::io::Result<()> {
 /// Accepts exactly the client certificates whose SHA-256 DER fingerprint is
 /// listed (one per line, hex, `:` separators and a leading name allowed, so
 /// Web3Signer `knownClients` files work as-is).
+///
+/// An optional third column lists the certificate's roles, comma-separated:
+/// `vc-node0 AB:CD:... duties` or `ops AB:CD:... exit`. A line without one
+/// gets `duties,exit`, which is what every client could do before roles.
 #[derive(Debug)]
 struct PinnedClients {
     fingerprints: Vec<[u8; 32]>,
+    roles: KnownRoles,
     algs: WebPkiSupportedAlgorithms,
+}
+
+fn parse_fingerprint(s: &str) -> Option<[u8; 32]> {
+    hex::decode(s.replace(':', "")).ok()?.try_into().ok()
 }
 
 impl PinnedClients {
@@ -108,21 +228,54 @@ impl PinnedClients {
         let text =
             std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
         let mut fingerprints = Vec::new();
+        let mut roles = KnownRoles::default();
+        let mut legacy = 0;
         for line in text
             .lines()
             .map(str::trim)
             .filter(|l| !l.is_empty() && !l.starts_with('#'))
         {
-            let fp = line
-                .split_whitespace()
-                .last()
-                .unwrap_or_default()
-                .replace(':', "");
-            let bytes: [u8; 32] = hex::decode(&fp)
-                .ok()
-                .and_then(|v| v.try_into().ok())
-                .with_context(|| format!("bad SHA-256 fingerprint {line:?}"))?;
-            fingerprints.push(bytes);
+            let cols: Vec<&str> = line.split_whitespace().collect();
+            let last = cols.last().copied().unwrap_or_default();
+            let (fp, granted) = match parse_fingerprint(last) {
+                Some(fp) => {
+                    legacy += 1;
+                    (fp, vec![Role::Duties, Role::Exit])
+                }
+                None => {
+                    let fp = cols
+                        .len()
+                        .checked_sub(2)
+                        .and_then(|i| parse_fingerprint(cols[i]))
+                        .with_context(|| format!("bad SHA-256 fingerprint {line:?}"))?;
+                    let mut granted = last
+                        .split(',')
+                        .map(|r| {
+                            Role::parse(r).with_context(|| {
+                                format!("unknown role {r:?} in {line:?} (duties, exit, deposit)")
+                            })
+                        })
+                        .collect::<anyhow::Result<Vec<_>>>()?;
+                    granted.sort();
+                    granted.dedup();
+                    (fp, granted)
+                }
+            };
+            anyhow::ensure!(
+                !fingerprints.contains(&fp),
+                "{} lists a fingerprint twice: {line:?}",
+                path.display()
+            );
+            fingerprints.push(fp);
+            roles.0.insert(fp, granted);
+        }
+        if legacy > 0 {
+            tracing::warn!(
+                path = %path.display(),
+                clients = legacy,
+                "known clients without a roles column get duties and exit; \
+                 add a third column (duties, exit, deposit) to restrict them"
+            );
         }
         anyhow::ensure!(
             !fingerprints.is_empty(),
@@ -131,6 +284,7 @@ impl PinnedClients {
         );
         Ok(Self {
             fingerprints,
+            roles,
             algs: provider().signature_verification_algorithms,
         })
     }
@@ -177,5 +331,37 @@ impl ClientCertVerifier for PinnedClients {
 
     fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
         self.algs.supported_schemes()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn load(text: &str) -> anyhow::Result<PinnedClients> {
+        let dir = tempfile::tempdir()?;
+        let p = dir.path().join("known");
+        std::fs::write(&p, text)?;
+        PinnedClients::load(&p)
+    }
+
+    #[test]
+    fn known_clients_roles() {
+        let a = "AA:".repeat(31) + "AA";
+        let b = "bb".repeat(32);
+        let c = load(&format!("# comment\nvc {a} duties\nops {b} exit,deposit\n")).unwrap();
+        assert!(c.roles.allows(&[0xaa; 32], Role::Duties));
+        assert!(!c.roles.allows(&[0xaa; 32], Role::Exit));
+        assert!(c.roles.allows(&[0xbb; 32], Role::Deposit));
+        assert!(!c.roles.allows(&[0xbb; 32], Role::Duties));
+
+        // Web3Signer's two-column format: duties and exit.
+        let c = load(&format!("vc {a}\n")).unwrap();
+        assert!(c.roles.allows(&[0xaa; 32], Role::Exit));
+        assert!(!c.roles.allows(&[0xaa; 32], Role::Deposit));
+
+        assert!(load(&format!("vc {a} admin\n")).is_err());
+        assert!(load(&format!("vc {a} duties\nvc2 {a} exit\n")).is_err());
+        assert!(load("vc nothex duties\n").is_err());
     }
 }
