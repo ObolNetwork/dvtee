@@ -5,11 +5,13 @@
 
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use http_body_util::BodyExt;
 use serde::Deserialize;
+use sev_signer::anti_rollback::{Bounds, TrustedClock};
 use sev_signer::api::{AppState, router};
 use sev_signer::keystore::{self, SecretKey};
 use sev_signer::network::Network;
@@ -375,6 +377,15 @@ fn app(data: &std::path::Path, policy: Policy) -> axum::Router {
 }
 
 fn app_on(data: &std::path::Path, policy: Policy, net: Network) -> axum::Router {
+    app_with_clock(data, policy, net, None)
+}
+
+fn app_with_clock(
+    data: &std::path::Path,
+    policy: Policy,
+    net: Network,
+    clock: Option<Arc<TrustedClock>>,
+) -> axum::Router {
     let state = AppState {
         keys: keystore::load_dir(&dir().join("keystores")).unwrap(),
         db: SlashingDb::open(&data.join("slashing"), net.genesis_validators_root).unwrap(),
@@ -385,6 +396,7 @@ fn app_on(data: &std::path::Path, policy: Policy, net: Network) -> axum::Router 
         pins: None,
         roles: None,
         tokens: None,
+        clock,
     };
     router(Arc::new(state))
 }
@@ -615,6 +627,7 @@ async fn client_roles() {
         pins: None,
         roles: Some(roles),
         tokens: None,
+        clock: None,
     };
     let app = router(Arc::new(state));
 
@@ -673,6 +686,7 @@ async fn auth_tokens() {
         pins: None,
         roles: None,
         tokens: Some(Tokens::load(&file).unwrap()),
+        clock: None,
     };
     let app = router(Arc::new(state));
 
@@ -753,4 +767,67 @@ async fn auth_tokens() {
     assert_eq!(r.status(), StatusCode::FORBIDDEN);
     let r = call(Some(format!("Bearer {ops}")), sign, Some(exit)).await;
     assert_eq!(r.status(), StatusCode::OK);
+}
+
+/// The start floor and horizon sit in front of the slashing database.
+#[tokio::test]
+async fn http_anti_rollback() {
+    let v = vectors();
+    let pk = &v.public_key;
+    let att = get(&v, "attestation"); // source 50688, target 50690
+    let randao = get(&v, "randao_reveal");
+    let mut net = hoodi_gloas();
+    net.genesis_time = Some(1742213400);
+    let at = |epoch: u64| 1742213400 + epoch * 384 + 10;
+    let new_clock = || {
+        Arc::new(TrustedClock::new(&net, 1, Duration::from_secs(288), || Duration::ZERO).unwrap())
+    };
+    let tmp = tempfile::tempdir().unwrap();
+    let watermark = tmp
+        .path()
+        .join("slashing")
+        .join(format!("{}.json", pk.trim_start_matches("0x")));
+
+    // No trusted time yet: slashable kinds wait, others are signed.
+    let clock = new_clock();
+    let app = app_with_clock(tmp.path(), allow_all(), net.clone(), Some(clock.clone()));
+    let (s, b) = post(&app, pk, &att.request, false).await;
+    assert_eq!(s, StatusCode::SERVICE_UNAVAILABLE, "{b}");
+    assert_eq!(
+        post(&app, pk, &randao.request, false).await.0,
+        StatusCode::OK
+    );
+
+    // Started during epoch 50689: floor 50691 covers target 50690.
+    let b = Bounds {
+        earliest: at(50689),
+        latest: at(50689),
+        agreeing: 3,
+    };
+    assert_eq!(clock.update(b), 50691);
+    let (s, b) = post(&app, pk, &att.request, false).await;
+    assert_eq!(s, StatusCode::PRECONDITION_FAILED, "{b}");
+    assert!(b.contains("start floor"), "{b}");
+    assert!(!watermark.exists(), "a refused request moved the watermark");
+
+    // Started during epoch 50687 (floor 50689), now in 50689 (horizon 50690).
+    let clock = new_clock();
+    clock.update(Bounds {
+        earliest: at(50687),
+        latest: at(50687),
+        agreeing: 3,
+    });
+    let app = app_with_clock(tmp.path(), allow_all(), net.clone(), Some(clock.clone()));
+    assert_eq!(
+        post(&app, pk, &att.request, false).await.0,
+        StatusCode::PRECONDITION_FAILED
+    );
+    clock.update(Bounds {
+        earliest: at(50689),
+        latest: at(50689),
+        agreeing: 3,
+    });
+    let (s, b) = post(&app, pk, &att.request, false).await;
+    assert_eq!((s, b.as_str()), (StatusCode::OK, att.signature.as_str()));
+    assert!(watermark.exists());
 }

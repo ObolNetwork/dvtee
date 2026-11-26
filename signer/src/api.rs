@@ -12,6 +12,7 @@ use axum::{Json, Router};
 use serde::Deserialize;
 use serde_json::json;
 
+use crate::anti_rollback::TrustedClock;
 use crate::auth::{TokenRoles, Tokens};
 use crate::keystore::SecretKey;
 use crate::network::Network;
@@ -37,6 +38,8 @@ pub struct AppState {
     pub roles: Option<KnownRoles>,
     /// Bearer tokens required on `/api/v1/eth2/*`, if configured.
     pub tokens: Option<Tokens>,
+    /// Start floor and horizon from trusted time; `None` when disabled.
+    pub clock: Option<Arc<TrustedClock>>,
 }
 
 /// The role a request needs.
@@ -181,6 +184,19 @@ async fn sign(
             return error(status, e.to_string());
         }
     };
+
+    // Anti-rollback: before the database, so a refusal moves no watermark.
+    if let (Some(clock), Some(check)) = (&st.clock, &prepared.slashing)
+        && let Err(e) = clock.check(check)
+    {
+        let status = if e.is_temporary() {
+            StatusCode::SERVICE_UNAVAILABLE
+        } else {
+            StatusCode::PRECONDITION_FAILED
+        };
+        tracing::warn!(pubkey = %identifier, %status, error = %e, "refused to sign");
+        return error(status, e.to_string());
+    }
 
     // Slashing check, durable record and BLS signing are blocking work.
     let st2 = st.clone();

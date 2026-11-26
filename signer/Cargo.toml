@@ -12,6 +12,7 @@ publish = false
 # deliberately, one at a time, with the spec and vector tests.
 aes = "=0.8.4"
 anyhow = "1.0.104"
+base64 = "0.23.1"
 axum = "0.8.9"
 axum-server = { version = "0.8.0", features = ["tls-rustls-no-provider"] }
 blst = "=0.3.17"

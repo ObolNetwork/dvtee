@@ -1,3 +1,4 @@
+pub mod anti_rollback;
 pub mod api;
 pub mod auth;
 pub mod keystore;
@@ -5,6 +6,7 @@ pub mod lock;
 pub mod network;
 pub mod pins;
 pub mod platform;
+pub mod roughtime;
 pub mod signing;
 pub mod slashing;
 pub mod snp;

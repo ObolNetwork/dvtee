@@ -59,10 +59,12 @@ if [[ ! -f $W/client.p12 ]]; then
   echo "lighthouse-vc $fp" >"$W/knownClients.txt"
 fi
 
+# The beacon mock's slots are not Hoodi's real ones, so the start floor (on by
+# default for hoodi) would refuse every duty; insecure-dev builds may turn it off.
 start_signer() {
   RUST_LOG=${SIGNER_LOG:-sev_signer=debug,tower_http=info} "$SEV_SIGNER" serve \
     --platform insecure-dev --insecure-dev-root-key "$W/dev-root.key" \
-    --network hoodi --keystores-dir "$W/cluster/node0/validator_keys" \
+    --network hoodi --anti-rollback false --keystores-dir "$W/cluster/node0/validator_keys" \
     --data-dir "$W/signer-data" --listen 127.0.0.1:9000 \
     --tls-known-clients "$W/knownClients.txt" --public-listen 127.0.0.1:9001 \
     >>"$W/logs/sev-signer.log" 2>&1 &

@@ -14,8 +14,8 @@
 //!
 //! Inside a TEE the disk is host-controlled storage: confidentiality and
 //! integrity come from the encrypted, measured disk, but nothing here stops
-//! the host from rolling the whole disk back to an older snapshot. See
-//! `ROADMAP.md` for the planned anti-rollback measures.
+//! the host from rolling the whole disk back to an older snapshot. The start
+//! floor in `anti_rollback` covers that with trusted time.
 
 use std::collections::HashMap;
 use std::fs::{self, File};

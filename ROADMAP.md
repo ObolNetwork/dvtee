@@ -178,13 +178,19 @@ Cluster shape guidance that follows from this:
    and verifies its peers' signer evidence at startup and on a timer, and exposes the result as a metric and a cluster health check.
    The cluster then knows how many of its shares are actually TEE-protected. No single-operator
    signer can offer that.
-5. **Proposed: a start floor against rollback.** A TEE cannot stop the host from restoring an old disk
-   snapshot, which rolls back slashing watermarks. The signer would never sign more than `k` epochs
-   ahead of a trusted clock, and after every start it would refuse all votes and proposals up to
-   `clock_epoch + k + 1`. Anything signed before the restart is then below the floor, whatever the disk
-   says. The cost is a few epochs of missed duties per restart for one signer, which the cluster covers.
-   The trusted clock can come from NTS or from signed timestamps of the other signers in the cluster.
-   See [State](docs/cluster-edits.md#state-watermarks-rollback-and-power-cycles).
+5. **Built: a start floor against rollback.** A TEE cannot stop the host from restoring an old disk
+   snapshot, which rolls back slashing watermarks. The signer never signs more than `k` epochs ahead
+   of a trusted clock, and after every start it refuses all votes and proposals up to
+   `clock_epoch + k + 1`, plus votes with a source before `clock_epoch + k` (surround votes). Anything
+   signed before the restart is then below the floor, whatever the disk says. The cost is about three
+   epochs of missed duties per restart for one signer (k = 1), which the cluster covers.
+   * The trusted clock is a quorum of Roughtime servers with pinned keys (3 of 5 independent operators
+     by default). The guest's clock, which the host controls without SecureTSC, only expires a
+     reading; it never moves the horizon forward.
+   * Signed timestamps from the other signers in the cluster remain an option that needs no outside
+     servers.
+   * See [State](docs/cluster-edits.md#state-watermarks-rollback-and-power-cycles) and
+     [`signer/README.md`](signer/README.md#anti-rollback-start-floor-and-horizon).
 6. **Clones are a host capability to design for.** A host can boot two guests from the same image.
    Both pass attestation and, if sealing is to `MEASUREMENT | POLICY`, both derive the same disk key.
    Within one cluster a clone holds the same share, so it cannot reach threshold on its own. It can
@@ -289,9 +295,10 @@ Cluster shape guidance that follows from this:
 
 **Phase 3: hardening the state**
 
-* **Anti-rollback for slashing protection** (design choice 5): a trusted clock (NTS, or signed
-  timestamps from the cluster's other signers; SNP SecureTSC on Genoa and later for monotonic time
-  between them), the "never more than `k` epochs ahead" rule, and the start floor.
+* **Anti-rollback for slashing protection** (design choice 5): done with a Roughtime quorum, the
+  "never more than `k` epochs ahead" rule and the start floor. Still open: timestamps from the
+  cluster's other signers as a second source, and SNP SecureTSC (Genoa and later) to keep signing
+  through short Roughtime outages.
 * **Rollback after a reshare.** A restored disk can bring back a retired share. Tombstones and the share
   generation must be covered by the same protection as the watermarks.
 * **Metrics, off by default.** `--metrics-listen` serves Prometheus metrics: sign latency by request
@@ -347,7 +354,7 @@ The honest state today. None of these are hidden; most are planned in the phases
 | Attestation verification | `verify-evidence` verifies SNP evidence offline: the AMD chain with the Milan, Genoa and Turin ARKs pinned, the report signature, the VCEK's TCB and chip id, guest policy and VMPL, the binding and the measurement. It is tested with a real Milan report and a real Turin VCEK, but not yet with a live report from our guest. Not checked: AMD's CRL, the configfs-tsm `auxblob` certificate table on a real host, and TDX quote signatures. |
 | Minimum TCB | `sealing-key` mixes a pinned minimum TCB into the SNP key. `verify-evidence --min-tcb` takes the same value and checks the reported and committed TCB against it, component by component. Neither has run on hardware. |
 | Guest image | The 2024 Alpine image is unsafe for keys (see Findings). The mkosi image is not started. |
-| Anti-rollback | None. A restored disk snapshot rolls back slashing watermarks. The proposed start floor is design choice 5. |
+| Anti-rollback | Start floor and horizon from a Roughtime quorum (design choice 5), on by default for public networks. It covers slashing watermarks only, not tombstones or share generations (cluster edits are not built). It depends on outbound UDP to the Roughtime servers, and three of the five defaults must answer. Without a quorum, blocks and attestations stop. Not yet run in the e2e devnet. |
 | Cluster edits | Not implemented. Recover, the reshare family with guests, ceremony orders and tombstones are designed in [docs/cluster-edits.md](docs/cluster-edits.md). Watermarks are stored per share pubkey, so a reshare would start them empty until they are keyed by validator. |
 | Forks | Gloas types implemented against consensus-specs v1.7.0-beta.4 and remote-signing-api v1.4.0, checked against the spec tests, go-eth2-client and Web3Signer's examples, and run on a Gloas devnet: Lighthouse, Teku, Lodestar and Prysm each signed every Gloas kind they use through sev-signer in a charon cluster, with no rejections, and every PTC vote was included. Gloas is still changing upstream, so each spec release needs re-checking. |
 | Exits | `VOLUNTARY_EXIT` needs a client certificate or token with the `exit` role, and is not rate limited. In a DV each signer holds one share, so an exit needs a threshold of operators to sign. A `knownClients` line without roles still gets `exit`, for compatibility. A signer with neither mTLS nor tokens checks no roles. Exits authorised by a party other than the operators are an open design item. |

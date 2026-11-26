@@ -1,11 +1,13 @@
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::{Context, bail};
 use clap::{Parser, Subcommand};
 use sha2::{Digest, Sha256};
 
+use sev_signer::anti_rollback::{self, TrustedClock};
 use sev_signer::api::{self, AppState};
 use sev_signer::network::{self, Network};
 use sev_signer::pins::Pins;
@@ -124,6 +126,10 @@ struct NetworkArgs {
     /// because the config file doesn't contain it.
     #[arg(long, env = "SEV_SIGNER_GENESIS_VALIDATORS_ROOT")]
     genesis_validators_root: Option<String>,
+    /// Genesis time (Unix seconds) of a config.yaml or custom: network, for
+    /// the anti-rollback start floor. Presets know their own.
+    #[arg(long, env = "SEV_SIGNER_GENESIS_TIME")]
+    genesis_time: Option<u64>,
 }
 
 impl NetworkArgs {
@@ -132,6 +138,25 @@ impl NetworkArgs {
             || self.network.contains('/')
             || self.network.ends_with(".yaml")
             || self.network.ends_with(".yml");
+        let mut network = self.resolve_inner(is_file)?;
+        match network.public_preset() {
+            // A config.yaml or custom: form of a public network keeps the
+            // preset's timing: the start floor must not depend on flags.
+            Some(p) => {
+                if self.genesis_time.is_some_and(|t| Some(t) != p.genesis_time) {
+                    bail!("--genesis-time differs from {}'s genesis time", p.name);
+                }
+                if network.slot_duration_ms != p.slot_duration_ms {
+                    bail!("the slot duration differs from {}'s", p.name);
+                }
+                network.genesis_time = p.genesis_time;
+            }
+            None => network.genesis_time = self.genesis_time,
+        }
+        Ok(network)
+    }
+
+    fn resolve_inner(&self, is_file: bool) -> anyhow::Result<Network> {
         if !is_file {
             if self.genesis_validators_root.is_some() {
                 bail!("--genesis-validators-root is only used with a config.yaml --network");
@@ -203,6 +228,31 @@ struct ServeArgs {
     /// pinned.
     #[arg(long, env = "SEV_SIGNER_CLUSTER_LOCK")]
     cluster_lock: Option<PathBuf>,
+    /// Anti-rollback start floor and horizon from Roughtime (see README).
+    /// Defaults to on for mainnet, hoodi and sepolia, and off for devnets. It
+    /// can only be turned off for a public network in an insecure-dev build.
+    #[arg(long, env = "SEV_SIGNER_ANTI_ROLLBACK", action = clap::ArgAction::Set)]
+    anti_rollback: Option<bool>,
+    /// k: never sign a block or attestation more than k epochs ahead of
+    /// trusted time. After a start, everything up to epoch clock + k + 1 is
+    /// refused.
+    #[arg(long, env = "SEV_SIGNER_ANTI_ROLLBACK_EPOCHS", default_value_t = 1,
+          value_parser = clap::value_parser!(u64).range(1..=anti_rollback::MAX_K))]
+    anti_rollback_epochs: u64,
+    /// Roughtime servers as BASE64KEY@host:port (comma-separated). Defaults
+    /// to five independent public servers.
+    #[arg(
+        long = "roughtime-server",
+        env = "SEV_SIGNER_ROUGHTIME_SERVERS",
+        value_delimiter = ','
+    )]
+    roughtime_servers: Vec<anti_rollback::Server>,
+    /// How many servers must agree.
+    #[arg(long, env = "SEV_SIGNER_ROUGHTIME_QUORUM", default_value_t = 3)]
+    roughtime_quorum: usize,
+    /// Maximum spread of the agreeing servers' times, seconds.
+    #[arg(long, env = "SEV_SIGNER_ROUGHTIME_TOLERANCE", default_value_t = 10)]
+    roughtime_tolerance: u64,
     /// EIP-3076 interchange file to import before serving.
     #[arg(long, env = "SEV_SIGNER_SLASHING_PROTECTION_IMPORT")]
     slashing_protection_import: Option<PathBuf>,
@@ -267,6 +317,7 @@ fn init_logging(json: bool) {
 
 async fn serve(args: ServeArgs) -> anyhow::Result<()> {
     let network = args.network.resolve()?;
+    let clock = anti_rollback_clock(&args, &network)?;
     let platform = args.platform.build()?;
     if platform.is_insecure() {
         refuse_mainnet(&network)?;
@@ -342,6 +393,7 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         pins,
         roles: tls.as_ref().and_then(|m| m.roles.clone()),
         tokens,
+        clock,
     });
     let app = api::router(state.clone()).layer(tower_http::trace::TraceLayer::new_for_http());
 
@@ -403,6 +455,70 @@ async fn serve(args: ServeArgs) -> anyhow::Result<()> {
         }
     }
     Ok(())
+}
+
+/// Starts the trusted-time thread, if anti-rollback is on. Slashable requests
+/// are refused until the first quorum reading sets the start floor.
+fn anti_rollback_clock(
+    args: &ServeArgs,
+    network: &Network,
+) -> anyhow::Result<Option<Arc<TrustedClock>>> {
+    let enabled = args.anti_rollback.unwrap_or(network.is_public());
+    if !enabled {
+        if network.is_public() && !cfg!(feature = "insecure-dev") {
+            bail!("--anti-rollback can only be turned off on devnets or in insecure-dev builds");
+        }
+        tracing::warn!(
+            "anti-rollback is off: a restored disk snapshot can roll back slashing protection"
+        );
+        return Ok(None);
+    }
+
+    let servers = if args.roughtime_servers.is_empty() {
+        anti_rollback::default_servers()
+    } else {
+        args.roughtime_servers.clone()
+    };
+    anti_rollback::check_distinct(&servers).map_err(anyhow::Error::msg)?;
+    let quorum = args.roughtime_quorum;
+    if quorum == 0 || quorum > servers.len() {
+        bail!(
+            "--roughtime-quorum must be between 1 and the number of servers ({})",
+            servers.len()
+        );
+    }
+    if quorum < 2 && network.is_public() {
+        bail!("--roughtime-quorum must be at least 2 on a public network");
+    }
+    let epoch = Duration::from_millis(network.epoch_duration_ms());
+    // Re-query every quarter epoch. A reading is used for at most three
+    // quarters of an epoch of guest time, so with k = 1 the horizon always
+    // covers the current epoch while the quorum answers.
+    let refresh = epoch / 4;
+    let max_age = epoch * 3 / 4;
+    let clock = Arc::new(
+        TrustedClock::with_monotonic_clock(network, args.anti_rollback_epochs, max_age)
+            .map_err(anyhow::Error::msg)?,
+    );
+    let settings = anti_rollback::Settings {
+        servers,
+        quorum,
+        tolerance: args.roughtime_tolerance,
+        timeout: Duration::from_secs(3),
+    };
+    tracing::info!(
+        servers = settings.servers.len(),
+        quorum,
+        k = args.anti_rollback_epochs,
+        "anti-rollback on: blocks and attestations wait for trusted time"
+    );
+    anti_rollback::spawn(
+        clock.clone(),
+        settings,
+        Arc::new(anti_rollback::Udp),
+        refresh,
+    );
+    Ok(Some(clock))
 }
 
 /// SIGINT or SIGTERM. Containers send SIGTERM, and as PID 1 the signer gets
