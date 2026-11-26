@@ -12,7 +12,7 @@ use sev_signer::pins::Pins;
 use sev_signer::platform::{PlatformArgs, SnpKeyParams};
 use sev_signer::signing::Policy;
 use sev_signer::slashing::SlashingDb;
-use sev_signer::{keystore, tee, tls};
+use sev_signer::{keystore, snp, tee, tls};
 
 /// Web3Signer-compatible BLS remote signer designed to run inside a
 /// confidential VM (AMD SEV-SNP today; Intel TDX / Arm CCA via configfs-tsm).
@@ -56,27 +56,58 @@ enum Cmd {
         #[command(flatten)]
         platform: PlatformArgs,
     },
-    /// Offline check of evidence fetched from /api/v1/tee/attestation: the
-    /// REPORT_DATA binding and debug policy. Does NOT verify the hardware
-    /// signature; use `snpguest verify attestation` (SEV-SNP) or DCAP (TDX).
-    VerifyEvidence {
-        /// JSON response saved from /api/v1/tee/attestation.
-        #[arg(long)]
-        evidence: PathBuf,
-        /// The nonce you sent, hex.
-        #[arg(long)]
-        nonce: String,
-        /// Expected launch measurement, hex (from sev-snp-measure / MRTD).
-        #[arg(long)]
-        expected_measurement: Option<String>,
-        /// Expected cluster lock hash, hex: the signer must be pinned to this
-        /// lock (compare with your own cluster-lock.json's lock_hash).
-        #[arg(long)]
-        expected_cluster_lock_hash: Option<String>,
-        /// Accept `insecure_dev` evidence (development and e2e tests only).
-        #[arg(long)]
-        allow_insecure_dev: bool,
-    },
+    /// Offline check of evidence fetched from /api/v1/tee/attestation. For
+    /// SEV-SNP: the AMD chain (pinned ARK -> ASK -> VCEK), the report
+    /// signature, the VCEK's TCB and chip id, guest policy, VMPL, a minimum
+    /// TCB, the measurement and the REPORT_DATA binding. For TDX only the
+    /// binding, debug bit and measurement, and only with
+    /// --allow-unverified-tdx (the quote signature is not checked).
+    VerifyEvidence(VerifyArgs),
+}
+
+#[derive(clap::Args)]
+struct VerifyArgs {
+    /// JSON response saved from /api/v1/tee/attestation.
+    #[arg(long)]
+    evidence: PathBuf,
+    /// The nonce you sent, hex.
+    #[arg(long)]
+    nonce: String,
+    /// Expected launch measurement, hex (from sev-snp-measure / MRTD).
+    #[arg(long)]
+    expected_measurement: Option<String>,
+    /// Expected cluster lock hash, hex: the signer must be pinned to this
+    /// lock (compare with your own cluster-lock.json's lock_hash).
+    #[arg(long)]
+    expected_cluster_lock_hash: Option<String>,
+    /// SEV-SNP: the VCEK (or VLEK), DER or PEM. Default: the certificate
+    /// table in the evidence's auxblob, if the host provisioned one.
+    #[arg(long)]
+    vcek: Option<PathBuf>,
+    /// SEV-SNP: fetch the VCEK from AMD's KDS (kdsintf.amd.com) for the
+    /// report's chip id and reported TCB. The only network access; the
+    /// certificate is still checked against the pinned AMD roots.
+    #[arg(long, conflicts_with = "vcek")]
+    fetch_vcek: bool,
+    /// SEV-SNP: minimum TCB_VERSION, raw 64-bit hex, the same value as
+    /// `sealing-key --snp-min-tcb`. Checked per component against the
+    /// reported and committed TCB.
+    #[arg(long, value_parser = parse_hex_u64)]
+    min_tcb: Option<u64>,
+    /// SEV-SNP: VMPL the report must come from.
+    #[arg(long, default_value_t = 0)]
+    expected_vmpl: u32,
+    /// SEV-SNP: fail if SMT is enabled on the host.
+    #[arg(long)]
+    deny_smt: bool,
+    /// Accept `insecure_dev` evidence (development and e2e tests only).
+    #[arg(long)]
+    allow_insecure_dev: bool,
+    /// Accept TDX evidence after only the binding, debug and measurement
+    /// checks. Its quote signature is not verified here (use Intel DCAP),
+    /// and the provider label comes from the evidence itself.
+    #[arg(long)]
+    allow_unverified_tdx: bool,
 }
 
 #[derive(clap::Args)]
@@ -214,19 +245,7 @@ fn main() -> anyhow::Result<()> {
             out.write_all(key.as_ref())?;
             Ok(())
         }
-        Cmd::VerifyEvidence {
-            evidence,
-            nonce,
-            expected_measurement,
-            expected_cluster_lock_hash,
-            allow_insecure_dev,
-        } => verify_evidence(
-            &evidence,
-            &nonce,
-            expected_measurement.as_deref(),
-            expected_cluster_lock_hash.as_deref(),
-            allow_insecure_dev,
-        ),
+        Cmd::VerifyEvidence(args) => verify_evidence(&args),
     }
 }
 
@@ -421,16 +440,10 @@ fn refuse_mainnet(network: &Network) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn verify_evidence(
-    path: &std::path::Path,
-    nonce: &str,
-    expected: Option<&str>,
-    expected_lock_hash: Option<&str>,
-    allow_insecure_dev: bool,
-) -> anyhow::Result<()> {
+fn verify_evidence(args: &VerifyArgs) -> anyhow::Result<()> {
     use rustls::pki_types::pem::PemObject;
 
-    let ev: serde_json::Value = serde_json::from_slice(&std::fs::read(path)?)?;
+    let ev: serde_json::Value = serde_json::from_slice(&std::fs::read(&args.evidence)?)?;
     let field = |k: &str| {
         ev[k]
             .as_str()
@@ -440,7 +453,7 @@ fn verify_evidence(
 
     let provider = field("provider")?;
     let report = unhex(field("report")?)?;
-    let nonce: [u8; 32] = unhex(nonce)?
+    let nonce: [u8; 32] = unhex(&args.nonce)?
         .try_into()
         .map_err(|_| anyhow::anyhow!("nonce must be 32 bytes"))?;
     let cert =
@@ -454,7 +467,11 @@ fn verify_evidence(
             b.try_into().map_err(|_| anyhow::anyhow!("bad pubkey"))
         })
         .collect::<anyhow::Result<_>>()?;
-
+    let expected = args
+        .expected_measurement
+        .as_deref()
+        .map(&unhex)
+        .transpose()?;
     let lock_hash: Option<[u8; 32]> = match ev["cluster_lock_hash"].as_str() {
         Some(h) => Some(
             unhex(h)?
@@ -463,19 +480,7 @@ fn verify_evidence(
         ),
         None => None,
     };
-
-    let layout =
-        tee::layout(provider).with_context(|| format!("unsupported provider {provider}"))?;
     let expected_rd = tee::report_data(&nonce, &cert, &pubkeys, lock_hash.as_ref());
-    let actual_rd = report
-        .get(layout.report_data..layout.report_data + 64)
-        .context("report too short")?;
-    let (m_off, m_len) = layout.measurement;
-    let measurement = hex::encode(
-        report
-            .get(m_off..m_off + m_len)
-            .context("report too short")?,
-    );
 
     println!("provider:            {provider}");
     println!(
@@ -487,32 +492,81 @@ fn verify_evidence(
         Some(h) => println!("cluster lock hash:   0x{}", hex::encode(h)),
         None => println!("cluster lock hash:   none (signer not pinned to a lock)"),
     }
+    // The hash is bound into REPORT_DATA above; this checks it is the lock
+    // the verifier expects.
+    let mut lock_ok = true;
+    if let Some(exp) = &args.expected_cluster_lock_hash {
+        let exp = exp.trim_start_matches("0x").to_ascii_lowercase();
+        match &lock_hash {
+            Some(h) if hex::encode(h) == exp => println!("cluster lock:        OK"),
+            _ => {
+                println!("cluster lock:        MISMATCH (expected 0x{exp})");
+                lock_ok = false;
+            }
+        }
+    }
+
+    if provider == "sev_guest" {
+        let auxblob = ev["auxblob"].as_str().map(unhex).transpose()?;
+        let leaf = snp_leaf(args, &report, auxblob.as_deref())?;
+        let expect = snp::Expect {
+            report_data: Some(expected_rd),
+            measurement: expected
+                .map(|m| m.try_into())
+                .transpose()
+                .map_err(|_| anyhow::anyhow!("--expected-measurement must be 48 bytes"))?,
+            min_tcb: args.min_tcb,
+            vmpl: args.expected_vmpl,
+            deny_smt: args.deny_smt,
+            now: std::time::SystemTime::now(),
+        };
+        let out = snp::verify(&report, leaf.as_deref(), &snp::amd_anchors(), &expect);
+        for l in &out.lines {
+            let detail = match (l.status, l.detail.as_str()) {
+                (snp::Status::Ok, "") => "OK".to_string(),
+                (snp::Status::Ok, d) => format!("OK ({d})"),
+                (snp::Status::Fail, d) => format!("FAIL ({d})"),
+                (snp::Status::Info, d) => d.to_string(),
+            };
+            println!("{:<20} {detail}", format!("{}:", l.name));
+        }
+        if !out.ok() || !lock_ok {
+            bail!("evidence verification failed");
+        }
+        return Ok(());
+    }
+
+    let layout =
+        tee::layout(provider).with_context(|| format!("unsupported provider {provider}"))?;
+    let actual_rd = report
+        .get(layout.report_data..layout.report_data + 64)
+        .context("report too short")?;
+    let (m_off, m_len) = layout.measurement;
+    let measurement = report
+        .get(m_off..m_off + m_len)
+        .context("report too short")?;
     println!(
-        "{:<20} {measurement}",
-        format!("{}:", layout.measurement_name)
+        "{:<20} {}",
+        format!("{}:", layout.measurement_name),
+        hex::encode(measurement)
     );
 
-    let mut ok = true;
+    let mut ok = lock_ok;
     if actual_rd == expected_rd {
         println!("report_data binding: OK");
     } else {
         println!("report_data binding: MISMATCH");
         ok = false;
     }
-    let debug = match provider {
-        "sev_guest" => tee::snp_debug_allowed(&report),
-        "tdx_guest" => tee::tdx_debug(&report),
-        _ => None,
-    };
     if provider == "insecure_dev" {
-        if allow_insecure_dev {
+        if args.allow_insecure_dev {
             println!("platform:            INSECURE DEV (accepted by --allow-insecure-dev)");
         } else {
             println!("platform:            FAIL (insecure_dev evidence: no TEE, unsigned)");
             ok = false;
         }
     } else {
-        match debug {
+        match tee::tdx_debug(&report) {
             Some(false) => println!("debug policy:        OK (debug disabled)"),
             Some(true) => {
                 println!(
@@ -523,35 +577,128 @@ fn verify_evidence(
             None => println!("debug policy:        unknown"),
         }
     }
-    if let Some(exp) = expected {
-        if exp
-            .trim_start_matches("0x")
-            .eq_ignore_ascii_case(&measurement)
-        {
-            println!("measurement:         OK");
-        } else {
-            println!("measurement:         MISMATCH (expected {exp})");
+    match &expected {
+        Some(exp) if exp.as_slice() == measurement => println!("measurement:         OK"),
+        Some(exp) => {
+            println!(
+                "measurement:         MISMATCH (expected {})",
+                hex::encode(exp)
+            );
             ok = false;
         }
-    } else {
-        println!("measurement:         not checked (pass --expected-measurement)");
+        None => println!("measurement:         not checked (pass --expected-measurement)"),
     }
-    if let Some(exp) = expected_lock_hash {
-        let exp = exp.trim_start_matches("0x").to_ascii_lowercase();
-        match &lock_hash {
-            Some(h) if hex::encode(h) == exp => println!("cluster lock:        OK"),
-            _ => {
-                println!("cluster lock:        MISMATCH (expected 0x{exp})");
-                ok = false;
-            }
+    if provider == "tdx_guest" {
+        if args.allow_unverified_tdx {
+            println!("quote signature:     NOT VERIFIED (accepted by --allow-unverified-tdx)");
+        } else {
+            println!(
+                "quote signature:     FAIL (TDX quotes are not verified here; use Intel DCAP)"
+            );
+            ok = false;
         }
     }
-    println!(
-        "\nNOTE: the report's hardware signature is NOT verified here. Verify it with\n\
-         `snpguest verify attestation` (SEV-SNP) or Intel DCAP (TDX) before trusting it."
-    );
     if !ok {
         bail!("evidence verification failed");
     }
     Ok(())
+}
+
+/// The VCEK/VLEK for an SNP report: --vcek, else the evidence's certificate
+/// table, else KDS with --fetch-vcek. None if none of these has it.
+fn snp_leaf(
+    args: &VerifyArgs,
+    report: &[u8],
+    auxblob: Option<&[u8]>,
+) -> anyhow::Result<Option<Vec<u8>>> {
+    if let Some(path) = &args.vcek {
+        let b = std::fs::read(path).with_context(|| format!("reading {}", path.display()))?;
+        println!("vcek:                {}", path.display());
+        return Ok(Some(snp::pem_to_der(&b).unwrap_or(b)));
+    }
+    // A report that doesn't parse fails in snp::verify with the reason.
+    let Ok(r) = snp::Report::parse(report) else {
+        return Ok(None);
+    };
+    let key = r.signing_key().unwrap_or(snp::SigningKey::Vcek);
+    if let Some(aux) = auxblob {
+        match snp::leaf_from_cert_table(aux, key) {
+            Ok(Some(leaf)) => {
+                println!("vcek:                from the evidence's certificate table");
+                return Ok(Some(leaf));
+            }
+            Ok(None) => println!("vcek:                not in the evidence's certificate table"),
+            Err(e) => println!("vcek:                bad certificate table in evidence: {e}"),
+        }
+    }
+    let url = snp::report_product(&r).map(|p| {
+        let tcb = snp::Tcb::decode(r.reported_tcb, p);
+        snp::kds_vcek_url(p, &r.chip_id, &tcb)
+    });
+    match (&url, args.fetch_vcek) {
+        _ if key == snp::SigningKey::Vlek => Ok(None),
+        (Some(url), true) => {
+            println!("vcek:                fetching {url}");
+            Ok(Some(kds_get(url)?))
+        }
+        (None, true) => bail!(
+            "report v{} has no CPUID, so the KDS product is unknown; download the VCEK and pass --vcek",
+            r.version
+        ),
+        (Some(url), false) => {
+            println!(
+                "vcek:                none (pass --fetch-vcek, or download {url} and pass --vcek)"
+            );
+            Ok(None)
+        }
+        (None, false) => Ok(None),
+    }
+}
+
+/// HTTPS GET of a KDS certificate. The certificate is verified against the
+/// pinned AMD roots afterwards, so TLS here only guards availability.
+fn kds_get(url: &str) -> anyhow::Result<Vec<u8>> {
+    use std::io::{Read, Write};
+
+    let rest = url
+        .strip_prefix("https://")
+        .context("KDS URL must be https")?;
+    let (host, path) = rest.split_once('/').context("bad KDS URL")?;
+    let mut roots = rustls::RootCertStore::empty();
+    roots.add_parsable_certificates(rustls_native_certs::load_native_certs().certs);
+    if roots.is_empty() {
+        bail!("no system CA certificates to reach {host}");
+    }
+    let config = rustls::ClientConfig::builder_with_provider(Arc::new(
+        rustls::crypto::ring::default_provider(),
+    ))
+    .with_safe_default_protocol_versions()?
+    .with_root_certificates(roots)
+    .with_no_client_auth();
+    let name = rustls::pki_types::ServerName::try_from(host.to_string())?;
+    let conn = rustls::ClientConnection::new(Arc::new(config), name)?;
+    let sock = std::net::TcpStream::connect((host, 443))?;
+    sock.set_read_timeout(Some(std::time::Duration::from_secs(30)))?;
+    let mut tls = rustls::StreamOwned::new(conn, sock);
+    write!(
+        tls,
+        "GET /{path} HTTP/1.0\r\nHost: {host}\r\nAccept: application/octet-stream\r\nUser-Agent: sev-signer\r\n\r\n"
+    )?;
+    let mut resp = Vec::new();
+    // HTTP/1.0: the body ends when the server closes the connection.
+    match tls.take(1 << 20).read_to_end(&mut resp) {
+        Ok(_) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof && !resp.is_empty() => {}
+        Err(e) => return Err(e).context("reading from KDS"),
+    }
+    let split = resp
+        .windows(4)
+        .position(|w| w == b"\r\n\r\n")
+        .context("bad HTTP response from KDS")?;
+    let head = String::from_utf8_lossy(&resp[..split]);
+    let status = head.lines().next().unwrap_or_default();
+    if status.split_whitespace().nth(1) != Some("200") {
+        bail!("KDS answered {status} (it rate limits; retry later or pass --vcek)");
+    }
+    Ok(resp[split + 4..].to_vec())
 }

@@ -7,6 +7,7 @@ pub mod pins;
 pub mod platform;
 pub mod signing;
 pub mod slashing;
+pub mod snp;
 pub mod ssz;
 pub mod tee;
 pub mod tls;
