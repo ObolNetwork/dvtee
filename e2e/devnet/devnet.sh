@@ -38,6 +38,11 @@
 #   EL_IMAGE, CL_IMAGE  Kurtosis geth and Lighthouse BN/VC images (default: those in kurtosis-args.yaml)
 #   LIGHTHOUSE, TEKU, LODESTAR, PRYSM
 #                       DV validator client images (defaults below)
+#   SIGNER3_REMOTE      host:port of a sev-signer running elsewhere, e.g. in an SEV-SNP guest
+#                       (docs/hardware-runbook.md). pod3 then gets a TCP forwarder from 127.0.0.1:9000
+#                       to it instead of a local signer; TLS still ends in the remote signer.
+#   SIGNER3_CERT        with SIGNER3_REMOTE: that signer's certificate (from its attestation evidence)
+#   SIGNER3_LOG         with SIGNER3_REMOTE: its log (the guest's serial log), for the summary counts
 set -euo pipefail
 
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
@@ -55,6 +60,12 @@ GLOAS_EPOCH=${GLOAS_EPOCH:-18446744073709551615}
 [[ $GLOAS_EPOCH =~ ^[0-9]+$ ]] || { echo "GLOAS_EPOCH must be an epoch number" >&2; exit 1; }
 EL_IMAGE=${EL_IMAGE:-}
 CL_IMAGE=${CL_IMAGE:-}
+SIGNER3_REMOTE=${SIGNER3_REMOTE:-}
+if [[ -n $SIGNER3_REMOTE ]]; then
+  [[ $SIGNER3_REMOTE =~ ^[0-9A-Za-z.-]+:[0-9]+$ ]] || { echo "SIGNER3_REMOTE must be host:port" >&2; exit 1; }
+  [[ -f ${SIGNER3_CERT:-} ]] || { echo "SIGNER3_REMOTE needs SIGNER3_CERT (the remote signer's cert.pem)" >&2; exit 1; }
+  SIGNER3_CERT=$(realpath "$SIGNER3_CERT")
+fi
 
 P=$ENCLAVE
 NET=kt-$ENCLAVE
@@ -183,8 +194,19 @@ token() { # node -> token (created on first use)
   cat "$f"
 }
 
+# pod3 with SIGNER3_REMOTE: a plain TCP forwarder in the pod, so Prysm still dials https://127.0.0.1:9000
+# and TLS terminates in the remote signer. The remote signer's certificate replaces the local one.
+signer_remote_up() {
+  local i=$1
+  mkdir -p "$W/run/node$i/signer-data/tls"
+  cp "$SIGNER3_CERT" "$W/run/node$i/signer-data/tls/cert.pem"
+  docker run -d --name "$P-signer$i" --network "container:$P-charon$i" --memory 64m "${U[@]}" "${LOGOPT[@]}" "$TOOLS" \
+    socat TCP-LISTEN:9000,bind=127.0.0.1,fork,reuseaddr "TCP:$SIGNER3_REMOTE" >/dev/null
+}
+
 signer_up() {
   local i=$1 mtls=()
+  [[ $i == 3 && -n $SIGNER3_REMOTE ]] && { signer_remote_up "$i"; return; }
   [[ $i == 0 || $i == 1 ]] && mtls=(--tls-known-clients /node/client/knownClients.txt)
   if [[ $i == 1 || $i == 3 ]]; then
     echo "vc-node$i $(token "$i") duties" >"$W/run/node$i/tokens.txt"
@@ -293,7 +315,12 @@ wait_slots() {
 
 signer_counts() {
   for i in 0 1 2 3; do
-    local l; l=$(docker logs "$P-signer$i" 2>&1 | strip)
+    local l
+    if [[ $i == 3 && -n $SIGNER3_REMOTE ]]; then
+      l=$(strip <"${SIGNER3_LOG:-/dev/null}")
+    else
+      l=$(docker logs "$P-signer$i" 2>&1 | strip)
+    fi
     echo "node$i rejected=$(grep -c 'rejected sign request' <<<"$l") refused=$(grep -c 'refused to sign' <<<"$l")" \
       "$(grep -oE 'kind="?[A-Z_0-9]+' <<<"$l" | sed 's/kind="\{0,1\}//' | sort | uniq -c | awk '{printf "%s=%s ", $2, $1}')"
   done

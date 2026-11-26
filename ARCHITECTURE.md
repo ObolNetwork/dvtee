@@ -1,5 +1,8 @@
 # sev-signer and you
 
+> This describes the 2024 Alpine prototype in `vm-scripts/`, which is superseded. The current guest
+> image is described in [image/README.md](image/README.md).
+
 This document details the design and architecture of `sev-signer`.
 
 The reference architecture is based on the following components:

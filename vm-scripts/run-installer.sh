@@ -1,4 +1,5 @@
 #!/bin/bash
+# SUPERSEDED by the mkosi image in image/ (see image/README.md). Kept for reference; do not use for keys.
 
 QEMU=${QEMU_SEV_PATH:=/root/AMDSEV/qemu/build/qemu-system-x86_64}
 $QEMU \

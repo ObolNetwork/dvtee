@@ -25,6 +25,7 @@ binds the TLS key and validator keys to it.
 > * The signer has been tested against independent test vectors, but it has not yet run on SEV-SNP hardware
 >   or been driven end to end by a validator client or charon cluster.
 > * The guest image in [`vm-scripts/`](vm-scripts/) is an early prototype and is **not safe for keys** as built.
+>   Its replacement, a mkosi image in [`image/`](image/), is written but not yet built or booted.
 > * It is unaudited.
 >
 > See [ROADMAP.md](ROADMAP.md) for the full assessment, [known gaps](ROADMAP.md#known-gaps) and the path to production.
@@ -82,12 +83,15 @@ See [`signer/README.md`](signer/README.md) for every option, the API reference a
 | Path | What it is |
 |------|------------|
 | [`signer/`](signer/) | `sev-signer`, the Rust signing service |
-| [`vm-scripts/`](vm-scripts/), [`linux-mainline-sev-src/`](linux-mainline-sev-src/) | Prototype tooling for the SEV-SNP guest image: kernel, initramfs, dm-verity root and installer |
+| [`image/`](image/), [`scripts/`](scripts/) | The mkosi guest image, its expected measurement and launch scripts; [docs/hardware-runbook.md](docs/hardware-runbook.md) is the first hardware run |
+| [`vm-scripts/`](vm-scripts/), [`linux-mainline-sev-src/`](linux-mainline-sev-src/) | Superseded by `image/`: the 2024 prototype tooling (kernel, initramfs, dm-verity root and installer) |
 | [`poc/`](poc/) | The original proof of concept: DKG and stock Web3Signer in an SNP guest |
 | [ARCHITECTURE.md](ARCHITECTURE.md) | Measured boot and disk sealing design for the guest image |
 | [ROADMAP.md](ROADMAP.md) | Status, known issues and the path to production |
 
 ## Building the prototype guest image
+
+Superseded by the mkosi image in [`image/`](image/README.md). Kept for reference.
 
 > [!CAUTION]
 > This image is for development on SEV-SNP hardware only.

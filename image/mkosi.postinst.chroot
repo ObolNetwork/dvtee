@@ -1,0 +1,8 @@
+#!/bin/sh
+# No login path of any kind: mask every getty and the debug shell. emergency
+# and rescue are replaced by poweroff units in /etc/systemd/system.
+set -eu
+systemctl mask \
+	getty@.service serial-getty@.service console-getty.service \
+	container-getty@.service autovt@.service getty.target \
+	debug-shell.service systemd-firstboot.service

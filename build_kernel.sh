@@ -1,4 +1,5 @@
 #!/bin/sh
+# SUPERSEDED by the mkosi image in image/ (see image/README.md). Kept for reference; do not use for keys.
 
 set -x
 set -e

@@ -1,0 +1,117 @@
+#!/bin/bash
+# Opens the sealed data disk in the initrd, and creates it on first boot.
+#
+# The key is `sev-signer sealing-key`: an SNP derived key over MEASUREMENT,
+# POLICY and a pinned minimum TCB, so only this measured image, launched with
+# the same policy on the same chip, can open the disk. There is no fallback
+# key. Any failure exits non-zero, and the unit powers the guest off.
+#
+# Decision table:
+#   LUKS header present         -> open it; never reformat, even if open fails
+#   no header, first 16 MiB = 0 -> first boot: luksFormat (AEAD), open, mkfs
+#   anything else               -> refuse
+#
+# Paths can be overridden from the environment for tests (image/tests/run.sh).
+# The unit sets none of them, and the kernel command line is measured.
+set -euo pipefail
+umask 077
+
+DEV=${SEV_SIGNER_DATA_DEV:-/dev/disk/by-id/virtio-sev-signer-data}
+NAME=${SEV_SIGNER_DATA_NAME:-sev-signer-data}
+MIN_TCB_FILE=${SEV_SIGNER_MIN_TCB_FILE:-/usr/lib/sev-signer/snp-min-tcb}
+RUN_DIR=${SEV_SIGNER_RUN_DIR:-/run/sev-signer}
+SEV_SIGNER=${SEV_SIGNER_BIN:-/usr/bin/sev-signer}
+CRYPTSETUP=${CRYPTSETUP:-cryptsetup}
+MKFS=${MKFS_EXT4:-mkfs.ext4}
+SEV_GUEST_DEV=${SEV_GUEST_DEV:-/dev/sev-guest}
+WAIT_SECS=${SEV_SIGNER_WAIT_SECS:-60}
+MAPPER=${SEV_SIGNER_MAPPER_DIR:-/dev/mapper}
+
+# LUKS2 labels: "init" until the filesystem exists, so a crash between
+# luksFormat and mkfs is finished on the next boot instead of failing forever.
+LABEL_INIT=sev-signer-init
+LABEL_DONE=sev-signer-data
+BLANK_BYTES=$((16 << 20))
+
+log() { echo "sev-signer-unlock: $*" >&2; }
+die() { log "FAILED: $*"; exit 1; }
+
+wait_for() { # path test-flag
+	local i
+	for ((i = 0; i < WAIT_SECS; i++)); do
+		test "$2" "$1" && return 0
+		sleep 1
+	done
+	return 1
+}
+
+key_file() {
+	local k=$RUN_DIR/data.key
+	"$SEV_SIGNER" sealing-key --purpose data-disk --snp-min-tcb "$MIN_TCB" --snp-vmpl 0 >"$k" \
+		|| die "sealing-key failed (wrong chip, policy or minimum TCB?)"
+	[[ $(stat -c %s "$k") == 32 ]] || die "sealing key is not 32 bytes"
+	echo "$k"
+}
+
+is_blank() {
+	[[ $(head -c "$BLANK_BYTES" "$DEV" | tr -d '\0' | wc -c) == 0 ]]
+}
+
+# The header is not authenticated, so check that what got mapped is the AEAD
+# layout we created, not a header the host rewrote to a weaker cipher.
+check_mapping() {
+	local st
+	st=$("$CRYPTSETUP" status "$NAME") || die "cryptsetup status failed"
+	if ! grep -Eq '^ *cipher: +aegis128-random$' <<<"$st" || ! grep -Eq '^ *integrity: +aead$' <<<"$st"; then
+		log "$st"
+		"$CRYPTSETUP" close "$NAME" || true
+		die "the mapping is not aegis128-random with AEAD integrity"
+	fi
+}
+
+main() {
+	MIN_TCB=$(cat "$MIN_TCB_FILE") || die "no minimum TCB in the image"
+	[[ $MIN_TCB =~ ^0x[0-9a-fA-F]{16}$ ]] || die "malformed minimum TCB '$MIN_TCB'"
+	mkdir -p "$RUN_DIR"
+	trap 'rm -f "$RUN_DIR/data.key"' EXIT
+
+	modprobe sev-guest 2>/dev/null || true
+	wait_for "$SEV_GUEST_DEV" -e || die "$SEV_GUEST_DEV missing: not an SNP guest?"
+	wait_for "$DEV" -e || die "data disk $DEV missing (attach it with serial=sev-signer-data)"
+	log "data disk $DEV, minimum TCB $MIN_TCB"
+
+	local key label
+	if "$CRYPTSETUP" isLuks --type luks2 "$DEV"; then
+		key=$(key_file)
+		"$CRYPTSETUP" open --type luks2 --key-file "$key" --keyfile-size 32 "$DEV" "$NAME" \
+			|| die "cannot open the data disk: the sealing key does not match (different measurement, policy, chip or TCB)"
+		rm -f "$key"
+		check_mapping
+		label=$("$CRYPTSETUP" luksDump "$DEV" | sed -n 's/^Label:[[:space:]]*//p')
+		if [[ $label == "$LABEL_INIT" ]]; then
+			log "finishing an interrupted first boot"
+			"$MKFS" -q -F -L sev-signer -m 0 "$MAPPER/$NAME" || die "mkfs failed"
+			"$CRYPTSETUP" config --label "$LABEL_DONE" "$DEV" || die "cannot set label"
+		fi
+		log "opened"
+		return 0
+	fi
+
+	is_blank || die "$DEV has no LUKS header and is not blank: refusing to format it"
+	log "first boot: creating the sealed data disk (aegis128-random, AEAD integrity)"
+	key=$(key_file)
+	"$CRYPTSETUP" luksFormat --batch-mode --type luks2 \
+		--cipher aegis128-random --key-size 128 --integrity aead --sector-size 4096 \
+		--pbkdf pbkdf2 --pbkdf-force-iterations 1000 --hash sha256 \
+		--label "$LABEL_INIT" --key-file "$key" --keyfile-size 32 "$DEV" \
+		|| die "luksFormat failed"
+	"$CRYPTSETUP" open --type luks2 --key-file "$key" --keyfile-size 32 "$DEV" "$NAME" \
+		|| die "cannot open the new data disk"
+	rm -f "$key"
+	check_mapping
+	"$MKFS" -q -F -L sev-signer -m 0 "$MAPPER/$NAME" || die "mkfs failed"
+	"$CRYPTSETUP" config --label "$LABEL_DONE" "$DEV" || die "cannot set label"
+	log "created and opened"
+}
+
+main "$@"

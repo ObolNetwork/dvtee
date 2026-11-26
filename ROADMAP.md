@@ -235,7 +235,8 @@ Cluster shape guidance that follows from this:
 **Phase 1: a minimal guest that can be trusted (biggest gap)**
 
 * Build the image with **mkosi**: reproducible builds, a UKI, a dm-verity root via systemd-repart, and
-  a data partition on LUKS2 with dm-integrity (AEAD).
+  a data partition on LUKS2 with dm-integrity (AEAD). **Written, not yet built or booted** (`image/`,
+  first hardware session: [docs/hardware-runbook.md](docs/hardware-runbook.md)).
 * No shell, no getty, no sshd and no passwords. The only network listener is sev-signer; ceremonies
   reach it through charon on the host. Logs go out over the network or the serial console.
 * Pin and build the kernel from source (OVMF: done, see `ovmf/`).
@@ -353,7 +354,7 @@ The honest state today. None of these are hidden; most are planned in the phases
 | End-to-end | `e2e/devnet/` runs a Kurtosis devnet with a 3-of-4 charon cluster where Lighthouse, Teku, Lodestar and Prysm each sign through their own sev-signer (insecure-dev). Over two runs: charon accepted every partial signature, every duty type including aggregates reached the chain, DV duties kept working with one node down, and slashing protection held across signer restarts. Runs are manual (about 4 GB of RAM, 15–40 minutes), not in CI. Only the insecure-dev platform has been tested. `e2e/simnet.sh` is a lighter local smoke test on charon's beacon mock. |
 | Attestation verification | `verify-evidence` verifies SNP evidence offline: the AMD chain with the Milan, Genoa and Turin ARKs pinned, the report signature, the VCEK's TCB and chip id, guest policy and VMPL, the binding and the measurement. It is tested with a real Milan report and a real Turin VCEK, but not yet with a live report from our guest. Not checked: AMD's CRL, the configfs-tsm `auxblob` certificate table on a real host, and TDX quote signatures. |
 | Minimum TCB | `sealing-key` mixes a pinned minimum TCB into the SNP key. `verify-evidence --min-tcb` takes the same value and checks the reported and committed TCB against it, component by component. Neither has run on hardware. |
-| Guest image | The 2024 Alpine image is unsafe for keys (see Findings). The mkosi image is not started. |
+| Guest image | The 2024 Alpine image is unsafe for keys (see Findings). The mkosi image (`image/`) is written, not yet built or booted. Keys reach it through a temporary, host-readable first-boot disk. |
 | Anti-rollback | Start floor and horizon from a Roughtime quorum (design choice 5), on by default for public networks. It covers slashing watermarks only, not tombstones or share generations (cluster edits are not built). It depends on outbound UDP to the Roughtime servers, and three of the five defaults must answer. Without a quorum, blocks and attestations stop. Not yet run in the e2e devnet. |
 | Cluster edits | Not implemented. Recover, the reshare family with guests, ceremony orders and tombstones are designed in [docs/cluster-edits.md](docs/cluster-edits.md). Watermarks are stored per share pubkey, so a reshare would start them empty until they are keyed by validator. |
 | Forks | Gloas types implemented against consensus-specs v1.7.0-beta.4 and remote-signing-api v1.4.0, checked against the spec tests, go-eth2-client and Web3Signer's examples, and run on a Gloas devnet: Lighthouse, Teku, Lodestar and Prysm each signed every Gloas kind they use through sev-signer in a charon cluster, with no rejections, and every PTC vote was included. Gloas is still changing upstream, so each spec release needs re-checking. |

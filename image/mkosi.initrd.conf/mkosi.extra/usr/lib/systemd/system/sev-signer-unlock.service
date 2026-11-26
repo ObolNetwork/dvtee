@@ -1,0 +1,19 @@
+# Opens (or on first boot creates) the sealed data disk before switch-root.
+# Fails closed: on any error the guest powers off. It never falls back to
+# another key and never drops to a shell.
+[Unit]
+Description=Unlock the sealed sev-signer data disk
+DefaultDependencies=no
+After=systemd-modules-load.service systemd-udev-trigger.service
+Wants=systemd-udev-trigger.service
+Before=initrd.target initrd-switch-root.target
+Conflicts=shutdown.target
+FailureAction=poweroff-force
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/lib/sev-signer/unlock
+StandardOutput=journal
+StandardError=journal
+TimeoutStartSec=10min
