@@ -196,3 +196,10 @@ cargo test --features insecure-dev
   scripts/fetch-spec-tests.sh            # streams ~1 GB, extracts ~1 MB into spec-tests/
   SPEC_TESTS_DIR=$PWD/spec-tests cargo test --test spec_tests -- --nocapture
   ```
+* **Interchange tests.** The EIP-3076 slashing protection interchange tests (v5.3.0) run against the
+  database. Results are compared with `should_succeed`, the field for minimal implementations:
+
+  ```sh
+  scripts/fetch-interchange-tests.sh     # ~8 KB download into interchange-tests/
+  INTERCHANGE_TESTS_DIR=$PWD/interchange-tests cargo test --test interchange_tests -- --nocapture
+  ```
