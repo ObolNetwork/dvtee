@@ -1,0 +1,43 @@
+name: presets
+
+# Daily: do the built-in network presets still match the upstream configs?
+# A fork (re)scheduled on Hoodi, Sepolia or mainnet fails this check, so the
+# preset can be updated and released before the fork.
+
+on:
+  schedule:
+    - cron: "41 5 * * *"
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "signer/src/network.rs"
+      - "signer/tests/upstream_presets.rs"
+      - "signer/scripts/fetch-upstream-configs.sh"
+      - ".github/workflows/presets.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  presets:
+    name: presets match upstream
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: signer
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install Rust toolchain
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          workspaces: signer
+      - run: scripts/fetch-upstream-configs.sh "$RUNNER_TEMP/upstream-configs"
+      - run: cargo test --locked --test upstream_presets -- --nocapture
+        env:
+          UPSTREAM_CONFIGS_DIR: ${{ runner.temp }}/upstream-configs
