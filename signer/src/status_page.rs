@@ -1,0 +1,260 @@
+//! A minimal HTML view of `/api/v1/tee/attestation` for browsers
+//! (`Accept: text/html`). It shows what the evidence says and how to verify
+//! it. It can't vouch for the signer: a compromised signer could serve the
+//! same page, so the page says so and gives the command that does verify.
+//!
+//! No scripts, no external resources, a strict CSP. Every value is either a
+//! number, hex, or escaped.
+
+use std::fmt::Write;
+
+use crate::snp::{self, Tcb};
+
+pub struct View<'a> {
+    pub provider: &'a str,
+    pub report: &'a [u8],
+    pub network: &'a str,
+    pub pubkeys: &'a [[u8; 48]],
+    pub lock_hash: Option<[u8; 32]>,
+    pub cert_sha256: [u8; 32],
+    /// `None` when anti-rollback is off.
+    pub clock: Option<ClockView>,
+    /// The request's Host header, for the verify command.
+    pub host: &'a str,
+}
+
+pub struct ClockView {
+    pub floor: Option<u64>,
+    pub trusted_epoch: Option<u64>,
+}
+
+/// Content-Security-Policy for the page: inline styles only.
+pub const CSP: &str = "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; \
+                       form-action 'none'; frame-ancestors 'none'";
+
+fn esc(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '"' => out.push_str("&quot;"),
+            '\'' => out.push_str("&#39;"),
+            c if c.is_control() => {}
+            c => out.push(c),
+        }
+    }
+    out
+}
+
+fn hx(b: &[u8]) -> String {
+    format!("0x{}", hex::encode(b))
+}
+
+fn tcb(t: &Tcb) -> String {
+    let mut s = format!(
+        "bootloader {} · TEE {} · SNP {} · microcode {}",
+        t.bootloader, t.tee, t.snp, t.microcode
+    );
+    if let Some(f) = t.fmc {
+        s = format!("FMC {f} · {s}");
+    }
+    s
+}
+
+pub fn render(v: &View) -> String {
+    let mut rows: Vec<(&str, String, &str)> = Vec::new(); // (label, html, class)
+    let (platform, ok) = match v.provider {
+        "sev_guest" => ("AMD SEV-SNP", true),
+        "tdx_guest" => ("Intel TDX", true),
+        "insecure_dev" => ("insecure-dev: NO SECURITY, development only", false),
+        other => (other, false),
+    };
+    rows.push(("Platform", esc(platform), if ok { "" } else { "bad" }));
+
+    if let Some(l) = crate::tee::layout(v.provider)
+        && let Some(m) = v
+            .report
+            .get(l.measurement.0..l.measurement.0 + l.measurement.1)
+    {
+        rows.push(("Measurement", format!("<code>{}</code>", hx(m)), ""));
+    }
+    if matches!(v.provider, "sev_guest" | "insecure_dev")
+        && let Ok(r) = snp::Report::parse(v.report)
+    {
+        let debug = r.policy & (1 << 19) != 0;
+        rows.push((
+            "Guest policy",
+            format!(
+                "<code>{:#x}</code>, debugging {}",
+                r.policy,
+                if debug { "ALLOWED" } else { "off" }
+            ),
+            if debug { "bad" } else { "" },
+        ));
+        if let Some(p) = snp::report_product(&r) {
+            rows.push((
+                "Reported TCB",
+                format!("{} ({})", tcb(&Tcb::decode(r.reported_tcb, p)), p.name()),
+                "",
+            ));
+        }
+        let (a, b, c) = r.current_fw;
+        rows.push(("Firmware", format!("{a}.{b}.{c}"), ""));
+    }
+    rows.push(("Network", esc(v.network), ""));
+    rows.push((
+        "Cluster lock",
+        match v.lock_hash {
+            Some(h) => format!("<code>{}</code>", hx(&h)),
+            None => "not pinned".into(),
+        },
+        "",
+    ));
+    let mut keys = format!(
+        "<details><summary>{} key share{}</summary>",
+        v.pubkeys.len(),
+        if v.pubkeys.len() == 1 { "" } else { "s" }
+    );
+    for k in v.pubkeys {
+        let _ = write!(keys, "<code>{}</code><br>", hx(k));
+    }
+    keys.push_str("</details>");
+    rows.push(("Validator keys", keys, ""));
+    rows.push((
+        "TLS certificate",
+        format!("sha256 <code>{}</code>", hex::encode(v.cert_sha256)),
+        "",
+    ));
+    let (time, signing, class) = match &v.clock {
+        None => ("off".to_string(), "no start floor".to_string(), ""),
+        Some(c) => match (c.floor, c.trusted_epoch) {
+            (None, _) => (
+                "waiting for a Roughtime quorum".into(),
+                "blocks and attestations wait for trusted time".into(),
+                "warn",
+            ),
+            (Some(_), None) => (
+                "reading expired; waiting for the quorum".into(),
+                "blocks and attestations paused".into(),
+                "warn",
+            ),
+            (Some(f), Some(e)) if e <= f => (
+                format!("epoch {e} (Roughtime quorum)"),
+                format!("blocks and attestations from epoch {} (start floor)", f + 1),
+                "warn",
+            ),
+            (Some(_), Some(e)) => (
+                format!("epoch {e} (Roughtime quorum)"),
+                "signing".into(),
+                "",
+            ),
+        },
+    };
+    rows.push(("Trusted time", time, ""));
+    rows.push(("Duties", signing, class));
+
+    let mut table = String::new();
+    for (label, html, class) in &rows {
+        let _ = write!(
+            table,
+            "<tr class=\"{class}\"><th>{label}</th><td>{html}</td></tr>"
+        );
+    }
+
+    let lock_flag = v
+        .lock_hash
+        .map(|h| format!(" \\\n  --expected-cluster-lock-hash {}", hx(&h)))
+        .unwrap_or_default();
+    let tee_flags = if v.provider == "insecure_dev" {
+        " --allow-insecure-dev"
+    } else {
+        " --fetch-vcek \\\n  --expected-measurement &lt;the published measurement&gt;"
+    };
+    let host = esc(v.host);
+
+    format!(
+        r#"<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DVTEE signer</title>
+<style>
+:root{{--bg:#0D1D21;--fg:#DFEAED;--muted:#8FA5AB;--ok:#2FE4AB;--warn:#F4C95D;--bad:#FF6B6B;--line:#1F3A40}}
+body{{margin:0;background:var(--bg);color:var(--fg);font:15px/1.5 system-ui,sans-serif}}
+main{{max-width:760px;margin:0 auto;padding:32px 16px}}
+h1{{font-size:22px;margin:0 0 4px}}
+h1 span{{color:var(--ok)}}
+p{{color:var(--muted);margin:0 0 20px}}
+table{{width:100%;border-collapse:collapse}}
+th,td{{text-align:left;vertical-align:top;padding:8px 0;border-top:1px solid var(--line)}}
+th{{width:150px;color:var(--muted);font-weight:500;padding-right:12px}}
+td{{word-break:break-all}}
+tr.warn td{{color:var(--warn)}}
+tr.bad td{{color:var(--bad)}}
+code,pre{{font:13px ui-monospace,monospace}}
+pre{{background:#091011;border:1px solid var(--line);padding:12px;overflow-x:auto;white-space:pre}}
+summary{{cursor:pointer}}
+h2{{font-size:16px;margin:28px 0 6px}}
+</style></head><body><main>
+<h1><span>●</span> DVTEE signer</h1>
+<p>One key share of an Obol distributed validator, held in a trusted execution environment.</p>
+<table>{table}</table>
+<h2>Don't trust this page</h2>
+<p>The signer generated this page from a fresh attestation report, but a compromised signer could
+show the same thing. Check the report yourself, against the measurement published for the release
+you expect:</p>
+<pre>NONCE=$(openssl rand -hex 32)
+curl -sk "https://{host}/api/v1/tee/attestation?nonce=$NONCE" &gt; evidence.json
+sev-signer verify-evidence --evidence evidence.json --nonce $NONCE{tee_flags}{lock_flag}</pre>
+</main></body></html>
+"#
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn view<'a>(provider: &'a str, report: &'a [u8], host: &'a str) -> View<'a> {
+        View {
+            provider,
+            report,
+            network: "hoodi<script>",
+            pubkeys: &[[0xab; 48]],
+            lock_hash: Some([0x6a; 32]),
+            cert_sha256: [0x11; 32],
+            clock: Some(ClockView {
+                floor: Some(100),
+                trusted_epoch: Some(99),
+            }),
+            host,
+        }
+    }
+
+    #[test]
+    fn escapes_and_shows_values() {
+        let report = vec![0u8; 0x4A0];
+        let html = render(&view(
+            "insecure_dev",
+            &report,
+            "x\"><script>alert(1)</script>",
+        ));
+        assert!(!html.contains("<script>"), "{html}");
+        assert!(html.contains("hoodi&lt;script&gt;"));
+        assert!(html.contains("NO SECURITY"));
+        assert!(html.contains(&format!("0x{}", "6a".repeat(32))));
+        assert!(html.contains("from epoch 101 (start floor)"));
+        assert!(html.contains("--allow-insecure-dev"));
+        assert!(html.contains("--expected-cluster-lock-hash"));
+    }
+
+    #[test]
+    fn snp_asks_for_the_measurement() {
+        let html = render(&view("sev_guest", &[0u8; 16], "signer:9001"));
+        assert!(html.contains("AMD SEV-SNP"));
+        assert!(html.contains("--fetch-vcek"));
+        assert!(!html.contains("--allow-insecure-dev"));
+        assert!(html.contains("https://signer:9001/api"));
+    }
+}

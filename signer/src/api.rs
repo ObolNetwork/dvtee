@@ -238,17 +238,35 @@ async fn sign(
 
 #[derive(Deserialize)]
 struct AttestationQuery {
-    nonce: String,
+    nonce: Option<String>,
+}
+
+/// A browser asking for the page rather than an API client.
+fn wants_html(headers: &HeaderMap) -> bool {
+    headers
+        .get(header::ACCEPT)
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|v| v.contains("text/html"))
 }
 
 async fn attestation(
     State(st): State<Arc<AppState>>,
+    headers: HeaderMap,
+    uri: axum::http::Uri,
     Query(q): Query<AttestationQuery>,
 ) -> Response {
-    let Some(nonce) = hex::decode(q.nonce.trim_start_matches("0x"))
-        .ok()
-        .and_then(|v| <[u8; 32]>::try_from(v).ok())
-    else {
+    let html = wants_html(&headers);
+    // The page needs no nonce: it proves nothing to its viewer anyway.
+    let nonce = match q.nonce.as_deref() {
+        Some(n) => hex::decode(n.trim_start_matches("0x"))
+            .ok()
+            .and_then(|v| <[u8; 32]>::try_from(v).ok()),
+        None if html => ring::rand::generate::<[u8; 32]>(&ring::rand::SystemRandom::new())
+            .ok()
+            .map(|n| n.expose()),
+        None => None,
+    };
+    let Some(nonce) = nonce else {
         return error(StatusCode::BAD_REQUEST, "nonce must be 32 bytes of hex");
     };
     let Some((cert_der, cert_pem)) = st.tls_cert.clone() else {
@@ -264,6 +282,39 @@ async fn attestation(
 
     let st2 = st.clone();
     match tokio::task::spawn_blocking(move || st2.platform.evidence(&report_data)).await {
+        Ok(Ok(ev)) if html => {
+            use sha2::Digest;
+            // HTTP/2 carries the host in the URI (:authority), HTTP/1.1 in Host.
+            let host = uri
+                .authority()
+                .map(|a| a.as_str())
+                .or_else(|| headers.get(header::HOST).and_then(|v| v.to_str().ok()))
+                .unwrap_or("this-signer");
+            let page = crate::status_page::render(&crate::status_page::View {
+                provider: &ev.provider,
+                report: &ev.report,
+                network: &st.network.name,
+                pubkeys: &pubkeys,
+                lock_hash,
+                cert_sha256: sha2::Sha256::digest(&cert_der).into(),
+                clock: st.clock.as_ref().map(|c| crate::status_page::ClockView {
+                    floor: c.floor_epoch(),
+                    trusted_epoch: c.trusted_epoch(),
+                }),
+                host,
+            });
+            (
+                [
+                    (header::CONTENT_TYPE, "text/html; charset=utf-8"),
+                    (header::CONTENT_SECURITY_POLICY, crate::status_page::CSP),
+                    (header::X_CONTENT_TYPE_OPTIONS, "nosniff"),
+                    (header::CACHE_CONTROL, "no-store"),
+                    (header::REFERRER_POLICY, "no-referrer"),
+                ],
+                page,
+            )
+                .into_response()
+        }
         Ok(Ok(ev)) => Json(json!({
             "provider": ev.provider,
             "report": format!("0x{}", hex::encode(&ev.report)),

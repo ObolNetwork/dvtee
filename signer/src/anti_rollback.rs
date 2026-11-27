@@ -351,6 +351,14 @@ impl TrustedClock {
         self.state.lock().expect("lock poisoned").floor
     }
 
+    /// The epoch of the latest trusted reading, if it hasn't expired. For
+    /// display only; signing decisions go through `check`.
+    pub fn trusted_epoch(&self) -> Option<u64> {
+        let st = self.state.lock().expect("lock poisoned");
+        st.floor?;
+        ((self.now)().saturating_sub(st.at) <= self.max_age).then(|| self.epoch(st.earliest))
+    }
+
     /// Whether a slashable message may be signed now. Non-slashable checks
     /// always pass.
     pub fn check(&self, check: &SlashingCheck) -> Result<(), Refusal> {
