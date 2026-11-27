@@ -36,8 +36,8 @@ At this stage, each participant should have a .charon directory containing `char
 
 - If not already done, clone this repo and head to the `poc` directory.
     ```
-    git clone https://github.com/ObolNetwork/sev-signer
-    cd sev-signer/poc
+    git clone https://github.com/ObolNetwork/dvtee
+    cd dvtee/poc
     ```
 - In order to connect to the guest, copy the SSH private key from the host to your local machine by running
     ```

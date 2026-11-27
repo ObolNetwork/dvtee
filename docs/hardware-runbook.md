@@ -100,7 +100,7 @@ mkdir -p $RUN && sudo $R/scripts/host-facts.sh $RUN/host-facts
 ## 2. Build
 
 ```sh
-git clone https://github.com/ObolNetwork/sev-signer $R && cd $R && git checkout <commit under test>
+git clone https://github.com/ObolNetwork/dvtee $R && cd $R && git checkout <commit under test>
 make ovmf                                    # out/ovmf/OVMF.fd
 sha256sum out/ovmf/OVMF.fd; cat out/ovmf/OVMF.snp-ovmf-hash
 make image-test                              # boot-script unit tests: expect "0 failed"
