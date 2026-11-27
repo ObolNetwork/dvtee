@@ -21,6 +21,17 @@ use serde_json::Value;
 
 use crate::ssz::{self, Root};
 
+/// Reads a JSON `null` as an empty list. charon (Go) writes a nil slice as
+/// `null` and hashes it as an empty list, e.g. `deposit_amounts` when
+/// `--deposit-amounts` isn't given.
+fn null_as_empty<'de, D, T>(d: D) -> Result<Vec<T>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    Ok(Option::<Vec<T>>::deserialize(d)?.unwrap_or_default())
+}
+
 const MAX_ENR: usize = 1024;
 const MAX_NAME: usize = 256;
 const MAX_UUID: usize = 64;
@@ -95,12 +106,12 @@ struct DefinitionJson {
     timestamp: String,
     num_validators: u64,
     threshold: u64,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_empty")]
     validators: Vec<AddressesJson>,
     #[serde(default)]
     dkg_algorithm: String,
     fork_version: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_empty")]
     deposit_amounts: Vec<Value>,
     #[serde(default)]
     consensus_protocol: String,
@@ -146,7 +157,7 @@ struct ValidatorJson {
     public_shares: Vec<String>,
     #[serde(default)]
     deposit_data: Option<DepositJson>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_empty")]
     partial_deposit_data: Vec<DepositJson>,
     #[serde(default)]
     builder_registration: Option<BuilderRegistrationJson>,
@@ -858,6 +869,21 @@ mod vectors {
         check(include_str!(
             "../tests/vectors/cluster-lock/cluster_lock_v1_11_0.json"
         ));
+    }
+
+    /// A real lock from `charon create cluster` without `--deposit-amounts`,
+    /// so `deposit_amounts` is `null`: it must parse in full and verify.
+    #[test]
+    fn charon_null_deposit_amounts() {
+        let json =
+            include_str!("../tests/vectors/cluster-lock/charon_create_null_deposit_amounts.json");
+        assert!(json.contains("\"deposit_amounts\": null"));
+        let lock = ClusterLock::parse(json.as_bytes()).expect("parses");
+        lock.verify_aggregate().unwrap();
+        assert_eq!(
+            hex::encode(lock.lock_hash),
+            "71ae536aca0d41a95cedde400a8f21ac4e9087c5e8072c2b6ec2fb2c8012c37f"
+        );
     }
 }
 
