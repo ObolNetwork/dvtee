@@ -300,6 +300,12 @@ async fn attestation(
                     .collect(),
                 lock_hash,
                 operator_index: st.pins.as_ref().map(|p| p.operator_index),
+                genesis_time: st.network.genesis_time,
+                epoch_ms: st.network.epoch_duration_ms(),
+                now: std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_secs())
+                    .unwrap_or(0),
                 cert_sha256: sha2::Sha256::digest(&cert_der).into(),
                 clock: st.clock.as_ref().map(|c| crate::status_page::ClockView {
                     floor: c.floor_epoch(),

@@ -23,6 +23,11 @@ pub struct View<'a> {
     pub clock: Option<ClockView>,
     /// The request's Host header, for the verify command.
     pub host: &'a str,
+    /// Genesis time and epoch length, to show epochs as times.
+    pub genesis_time: Option<u64>,
+    pub epoch_ms: u64,
+    /// Unix seconds now (the guest clock; display only).
+    pub now: u64,
 }
 
 pub struct ClockView {
@@ -78,6 +83,42 @@ fn explorer_url(network: &str, pubkey: &[u8; 48]) -> Option<String> {
         _ => return None,
     };
     Some(format!("https://{host}/validator/{}", hx(pubkey)))
+}
+
+/// `YYYY-MM-DD HH:MM UTC` for Unix seconds (proleptic Gregorian).
+fn utc(t: u64) -> String {
+    let days = (t / 86_400) as i64;
+    let secs = t % 86_400;
+    // Howard Hinnant's civil_from_days.
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = yoe + era * 400 + i64::from(m <= 2);
+    format!(
+        "{y:04}-{m:02}-{d:02} {:02}:{:02} UTC",
+        secs / 3600,
+        secs % 3600 / 60
+    )
+}
+
+/// "epoch N (≈ time, in about M min)" when the genesis time is known.
+fn epoch_label(v: &View, epoch: u64) -> String {
+    let Some(g) = v.genesis_time else {
+        return format!("epoch {epoch}");
+    };
+    let start = g.saturating_add(epoch.saturating_mul(v.epoch_ms) / 1000);
+    let rel = if start > v.now {
+        let min = (start - v.now).div_ceil(60);
+        format!(", in about {min} min")
+    } else {
+        String::new()
+    };
+    format!("epoch {epoch} (≈ {}{rel})", utc(start))
 }
 
 fn tcb(t: &Tcb) -> String {
@@ -203,12 +244,15 @@ pub fn render(v: &View) -> String {
                 "warn",
             ),
             (Some(f), Some(e)) if e <= f => (
-                format!("epoch {e} (Roughtime quorum)"),
-                format!("blocks and attestations from epoch {} (start floor)", f + 1),
+                format!("{}, from a Roughtime quorum", epoch_label(v, e)),
+                format!(
+                    "blocks and attestations from {}, after the start floor",
+                    epoch_label(v, f + 1)
+                ),
                 "warn",
             ),
             (Some(_), Some(e)) => (
-                format!("epoch {e} (Roughtime quorum)"),
+                format!("{}, from a Roughtime quorum", epoch_label(v, e)),
                 "signing".into(),
                 "",
             ),
@@ -294,6 +338,9 @@ mod tests {
                 trusted_epoch: Some(99),
             }),
             host,
+            genesis_time: Some(1742213400),
+            epoch_ms: 384_000,
+            now: 1742213400 + 99 * 384,
         }
     }
 
@@ -309,7 +356,12 @@ mod tests {
         assert!(html.contains("hoodi&lt;script&gt;"));
         assert!(html.contains("NO SECURITY"));
         assert!(html.contains(&format!("0x{}", "6a".repeat(32))));
-        assert!(html.contains("from epoch 101 (start floor)"));
+        assert!(
+            html.contains(
+                "from epoch 101 (≈ 2025-03-17 22:56 UTC, in about 13 min), after the start floor"
+            ),
+            "{html}"
+        );
         assert!(html.contains("--allow-insecure-dev"));
         assert!(html.contains("--expected-cluster-lock-hash"));
         assert!(html.contains(&format!("validator <code>0x{}", "cd".repeat(48))));
@@ -317,6 +369,14 @@ mod tests {
         assert!(html.contains("operator 2"));
         // A custom network name gets no launchpad link.
         assert!(!html.contains("launchpad.obol.org"));
+    }
+
+    #[test]
+    fn utc_dates() {
+        assert_eq!(utc(0), "1970-01-01 00:00 UTC");
+        assert_eq!(utc(1742213400), "2025-03-17 12:10 UTC"); // Hoodi genesis
+        assert_eq!(utc(1797361944), "2026-12-15 19:12 UTC"); // Hoodi Gloas
+        assert_eq!(utc(951_782_400), "2000-02-29 00:00 UTC");
     }
 
     #[test]
