@@ -69,6 +69,17 @@ fn launchpad_url(network: &str, lock_hash: &[u8; 32]) -> Option<String> {
     ))
 }
 
+/// The validator's page on beaconcha.in for the public networks.
+fn explorer_url(network: &str, pubkey: &[u8; 48]) -> Option<String> {
+    let host = match network {
+        "mainnet" => "beaconcha.in",
+        "hoodi" => "hoodi.beaconcha.in",
+        "sepolia" => "sepolia.beaconcha.in",
+        _ => return None,
+    };
+    Some(format!("https://{host}/validator/{}", hx(pubkey)))
+}
+
 fn tcb(t: &Tcb) -> String {
     let mut s = format!(
         "bootloader {} · TEE {} · SNP {} · microcode {}",
@@ -154,9 +165,14 @@ pub fn render(v: &View) -> String {
     for (share, dv) in &v.keys {
         match dv {
             Some(dv) => {
+                let link = explorer_url(v.network, dv)
+                    .map(|u| {
+                        format!(" · <a href=\"{u}\" rel=\"noopener noreferrer\">beaconcha.in</a>")
+                    })
+                    .unwrap_or_default();
                 let _ = write!(
                     keys,
-                    "<div class=\"key\">validator <code>{}</code><br>this share <code>{}</code></div>",
+                    "<div class=\"key\">validator <code>{}</code>{link}<br>this share <code>{}</code></div>",
                     hx(dv),
                     hx(share)
                 );
@@ -319,6 +335,22 @@ mod tests {
                 .starts_with("https://launchpad.obol.org/")
         );
         assert!(launchpad_url("devnet", &h).is_none());
+        let k = [0xcd; 48];
+        assert_eq!(
+            explorer_url("hoodi", &k).unwrap(),
+            format!("https://hoodi.beaconcha.in/validator/0x{}", "cd".repeat(48))
+        );
+        assert!(
+            explorer_url("mainnet", &k)
+                .unwrap()
+                .starts_with("https://beaconcha.in/validator/")
+        );
+        assert!(
+            explorer_url("sepolia", &k)
+                .unwrap()
+                .starts_with("https://sepolia.beaconcha.in/")
+        );
+        assert!(explorer_url("devnet", &k).is_none());
     }
 
     #[test]
