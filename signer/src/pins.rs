@@ -8,8 +8,8 @@
 //!
 //! The pinned lock fixes the fee recipient of each validator. Requests that
 //! carry a fee recipient are refused unless it matches:
-//! `VALIDATOR_REGISTRATION` (whose `pubkey` must also be the share's
-//! validator), Gloas `PROPOSER_PREFERENCES`, and self-built Gloas
+//! `VALIDATOR_REGISTRATION` (whose `pubkey` must be the share's validator or
+//! the share itself), Gloas `PROPOSER_PREFERENCES`, and self-built Gloas
 //! `EXECUTION_PAYLOAD_ENVELOPE`s. Pre-Gloas blocks are signed as headers, so
 //! their fee recipient can't be checked here. Gas limits are not pinned.
 
@@ -93,6 +93,12 @@ impl Pins {
                 Ok(Some(pins))
             }
         }
+    }
+
+    /// The distributed validator's group public key for one of this signer's
+    /// shares.
+    pub fn validator_of(&self, share: &[u8; 48]) -> Option<[u8; 48]> {
+        self.located.by_share.get(share).map(|v| v.pubkey)
     }
 
     fn validator(&self, share: &[u8; 48]) -> Result<&LockValidator, PrepareError> {

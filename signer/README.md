@@ -154,6 +154,16 @@ sev-signer verify-evidence --evidence evidence.json --nonce $NONCE \
   --vcek vcek.der          # or --fetch-vcek, or neither if the evidence carries it
 ```
 
+**In a browser.** A request with `Accept: text/html` (and no nonce needed) gets a minimal status page
+built from a fresh report:
+- the platform, measurement, guest policy, reported TCB and firmware;
+- the network, pinned lock, key shares and TLS certificate fingerprint;
+- trusted time and the start floor;
+- the command above, filled in.
+
+It is a convenience, not a check: a compromised signer could serve the same page, and the page says so.
+It has no scripts, loads nothing external and sends a strict CSP. API clients get JSON as before.
+
 For SEV-SNP, `verify-evidence` checks offline:
 * **AMD chain.** The ARKs for Milan, Genoa and Turin are built in (`certs/amd/`) and pinned by SHA-256
   (fingerprints in [`tests/fixtures/snp/README.md`](tests/fixtures/snp/README.md)). It verifies
