@@ -341,8 +341,8 @@ impl Network {
                     ([0x50, 0x00, 0x09, 0x10], 0),
                     ([0x60, 0x00, 0x09, 0x10], 2048),
                     ([0x70, 0x00, 0x09, 0x10], 50688),
-                    // Unscheduled again on 2026-10-22; version as announced.
-                    ([0x80, 0x00, 0x09, 0x10], FAR),
+                    // eth-clients/hoodi#35: 2026-12-15 19:12:24 UTC.
+                    ([0x80, 0x00, 0x09, 0x10], 143616),
                 ],
             ),
             net(
@@ -418,10 +418,8 @@ mod tests {
         let hoodi: Network = "hoodi".parse().unwrap();
         assert_eq!(hoodi.fork_at_epoch(2047).unwrap().name, ForkName::Deneb);
         assert_eq!(hoodi.fork_at_epoch(2048).unwrap().name, ForkName::Electra);
-        assert_eq!(
-            hoodi.fork_at_epoch(u64::MAX - 1).unwrap().name,
-            ForkName::Fulu
-        );
+        assert_eq!(hoodi.fork_at_epoch(143615).unwrap().name, ForkName::Fulu);
+        assert_eq!(hoodi.fork_at_epoch(143616).unwrap().name, ForkName::Gloas);
         let sepolia: Network = "sepolia".parse().unwrap();
         assert_eq!(sepolia.fork_at_epoch(353024).unwrap().name, ForkName::Gloas);
         assert_eq!(
