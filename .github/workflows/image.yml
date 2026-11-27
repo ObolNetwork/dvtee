@@ -1,7 +1,8 @@
 name: image
 
-# Builds the guest image twice, on different runner images, and fails unless
-# both builds are byte-identical. The artifacts are what an SNP host boots
+# Builds the guest image twice, on separate runners from different checkout
+# paths, and fails unless both builds are byte-identical. (ubuntu-22.04's
+# debian-archive-keyring can't verify trixie, so both use ubuntu-24.04.) The artifacts are what an SNP host boots
 # (hosts that block user namespaces can't run mkosi themselves). The summary
 # lists SHA256SUMS; scripts/expected-measurement.sh turns the UKI into the
 # launch measurement.
@@ -34,16 +35,17 @@ env:
 
 jobs:
   build:
-    name: build (${{ matrix.runner }})
+    name: build (${{ matrix.path }})
     strategy:
       matrix:
-        runner: [ubuntu-24.04, ubuntu-22.04]
-    runs-on: ${{ matrix.runner }}
+        path: [a, other/path/b]
+    runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          path: ${{ matrix.path }}
       - name: Host setup
         run: |
           # mkosi sandboxes itself in unprivileged user namespaces.
@@ -51,20 +53,21 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y -qq debian-archive-keyring
       - name: Build
+        working-directory: ${{ matrix.path }}
         run: |
           args=()
           [[ -n $PROFILE ]] && args=(--profile "$PROFILE")
           OUT_DIR=$PWD/out/image image/build.sh "${args[@]}"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: image-${{ matrix.runner }}
+          name: image-${{ strategy.job-index }}
           path: |
-            out/image*/sev-signer
-            out/image*/sev-signer.efi
-            out/image*/sev-signer.raw
-            out/image*/sev-signer.roothash
-            out/image*/SHA256SUMS
-            out/image*/BUILDINFO
+            ${{ matrix.path }}/out/image*/sev-signer
+            ${{ matrix.path }}/out/image*/sev-signer.efi
+            ${{ matrix.path }}/out/image*/sev-signer.raw
+            ${{ matrix.path }}/out/image*/sev-signer.roothash
+            ${{ matrix.path }}/out/image*/SHA256SUMS
+            ${{ matrix.path }}/out/image*/BUILDINFO
           if-no-files-found: error
 
   reproducible:
@@ -78,16 +81,16 @@ jobs:
           pattern: image-*
       - name: Compare the two builds
         run: |
-          diff -r image-ubuntu-24.04 image-ubuntu-22.04
+          diff -r image-0 image-1
           {
-            echo "### Guest image (reproduced on two runner images)"
+            echo "### Guest image (reproduced on two runners)"
             echo '```'
-            cat image-ubuntu-24.04/*/SHA256SUMS
-            cat image-ubuntu-24.04/*/BUILDINFO
+            cat image-0/*/SHA256SUMS
+            cat image-0/*/BUILDINFO
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: image
-          path: image-ubuntu-24.04/
+          path: image-0/
           if-no-files-found: error
