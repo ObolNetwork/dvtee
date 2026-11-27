@@ -47,7 +47,8 @@ cargo build --release
   public shares at a single operator index, and stores the lock in `<data-dir>/cluster-lock.json`.
   After that it refuses to start with any other lock. A new lock means new shares, so it needs a new
   signer (a reshare or recover into a fresh guest), not a restart. While pinned:
-  * `VALIDATOR_REGISTRATION` must carry the lock's fee recipient and the share's validator pubkey;
+  * `VALIDATOR_REGISTRATION` must carry the lock's fee recipient, and as `pubkey` either the validator's
+    key or this signer's own share (what a DV's validator client sends);
   * Gloas `PROPOSER_PREFERENCES` and self-built `EXECUTION_PAYLOAD_ENVELOPE`s must carry the lock's
     fee recipient;
   * gas limits are not pinned, and pre-Gloas blocks are signed as headers, so their fee recipient
