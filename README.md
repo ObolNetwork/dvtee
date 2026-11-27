@@ -1,127 +1,169 @@
 ![Obol Logo](https://obol.org/obolnetwork.png)
 
-<h1 align="center">SEV Signer<br/>A Web3Signer-compatible remote signer for confidential VMs</h1>
+<h1 align="center">DVTEE<br/>Distributed validators, with every share sealed in a TEE</h1>
 
 <p align="center">
 <a href="https://github.com/ObolNetwork/sev-signer/actions/workflows/signer.yml"><img src="https://github.com/ObolNetwork/sev-signer/actions/workflows/signer.yml/badge.svg" alt="CI"></a>
 <a href="LICENSE"><img src="https://img.shields.io/badge/License-BUSL--1.1-blue.svg" alt="License: BUSL-1.1"></a>
 <img src="https://img.shields.io/badge/status-experimental-orange.svg" alt="Status: experimental">
+<img src="https://img.shields.io/badge/forks-Electra%20%C2%B7%20Fulu%20%C2%B7%20Gloas-6f42c1.svg" alt="Forks: Electra, Fulu, Gloas">
+<img src="https://img.shields.io/badge/TEE-AMD%20SEV--SNP-ed1c24.svg" alt="TEE: AMD SEV-SNP">
 </p>
 
-This repo holds a BLS remote signer for [Obol](https://obol.org) [distributed validators](https://docs.obol.org/docs/int/key-concepts).
-The signer is built to run inside a confidential VM. On AMD SEV-SNP, the host that runs the VM can't read
-the key shares or use the signer to produce slashable signatures. It also holds tooling to build that guest
-image. Intel TDX and Arm CCA support is planned.
+A [distributed validator](https://docs.obol.org/docs/int/key-concepts) already removes the single key: no one
+operator can sign alone, and one failure won't slash you. That's
+[Validator Beat's Stage 1](https://validatorbeat.com/methodology/).
 
-The validator client talks to the signer through the standard [Web3Signer](https://docs.web3signer.consensys.io/)
-API, so Lighthouse, Teku, Lodestar and the other validator clients work unchanged. Before trusting a signer,
-an operator asks the hardware for an attestation report. The report proves which software is running and
-binds the TLS key and validator keys to it.
+**DVTEE is the next layer.** It moves each operator's key share into a confidential VM that the operator's own
+machine can't look inside. The host can't read the share, can't copy it, and can't talk the signer into a
+slashable or off-policy signature. The other operators can check which code is holding the share before they
+trust it.
 
-![sev-signer architecture](docs/images/architecture.svg)
+The piece that does this is **`sev-signer`**. It's a small Rust BLS signer, built to run in an AMD SEV-SNP
+guest, behind the standard [Web3Signer](https://docs.web3signer.consensys.io/) API. Charon and your validator
+client don't change: you point the VC at a different URL.
+
+```mermaid
+flowchart LR
+  subgraph cluster["A 3-of-4 distributed validator (Stage 1)"]
+    direction LR
+    subgraph op0["Operator 0's machine (untrusted host)"]
+      direction TB
+      c0[charon] --- vc0[validator client]
+      vc0 -- "Web3Signer API · mTLS" --> g0
+      subgraph g0["SEV-SNP guest · measured · sealed disk"]
+        s0["sev-signer<br/>key share 0<br/>slashing DB"]
+      end
+    end
+    op1["Operator 1<br/>charon · VC · share 1"]
+    op2["Operator 2<br/>charon · VC · share 2"]
+    op3["Operator 3<br/>charon · VC · share 3"]
+    c0 -. "p2p consensus,<br/>partial signatures" .- op1 & op2 & op3
+  end
+  peers(["other operators,<br/>monitoring"]) -- "attestation report:<br/>which code, which keys, which lock" --> g0
+```
 
 > [!WARNING]
-> **Experimental. Not for mainnet keys.** Published early so other TEE signer projects can compare designs.
-> * The signer has been tested against independent test vectors, but it has not yet run on SEV-SNP hardware
->   or been driven end to end by a validator client or charon cluster.
-> * The guest image in [`vm-scripts/`](vm-scripts/) is an early prototype and is **not safe for keys** as built.
->   Its replacement, a mkosi image in [`image/`](image/), is written but not yet built or booted.
+> **Experimental. Not for mainnet keys.**
+> * The signer runs in charon clusters on devnets with four validator clients, through Electra, Fulu and
+>   Gloas.
+> * The guest image builds reproducibly but **has not booted on SEV-SNP hardware yet**. That's the next
+>   milestone, together with a Hoodi run.
 > * It is unaudited.
 >
-> See [ROADMAP.md](ROADMAP.md) for the full assessment, [known gaps](ROADMAP.md#known-gaps) and the path to production.
+> [ROADMAP.md](ROADMAP.md) has the full status and the [known gaps](ROADMAP.md#known-gaps).
 
-## How it works
+## What the TEE adds to a distributed validator
 
-| | |
+| A Stage 1 DV on its own | With DVTEE |
 |---|---|
-| **Signs only what it can verify** | Every signing root is recomputed from the typed request, with the domain chosen by request type. The signer never signs a 32-byte root supplied by the client, so a compromised validator client can't use it as a signing oracle. |
-| **Slashing protection inside the TEE** | Keeps EIP-3076 watermarks per key and writes them to disk before releasing a signature. Interchange files can be imported and exported. |
-| **Keys stay in the guest** | Run `charon dkg` inside the VM, and key shares are created on its encrypted disk. They are never exported. If a node is lost, the cluster replaces it with `charon edit replace-operator`. |
-| **Attested TLS** | TLS terminates inside the guest. `GET /api/v1/tee/attestation?nonce=…` returns a hardware report whose REPORT_DATA commits to the nonce, the TLS certificate and the BLS public keys. |
-| **Vendor neutral** | Evidence comes from Linux configfs-tsm, which serves SEV-SNP today and TDX and CCA with the same code. |
-| **Small trusted code base** | About 2,500 lines of Rust. Uses blst and rustls, with no consensus-types library. |
+| A compromised operator machine holds a readable key share. | The share lives only inside the guest, on a disk sealed to the chip and the measured image. The host sees ciphertext. |
+| Slashing protection is a file the host can edit, delete or roll back. | Watermarks are kept inside the guest and written before every signature. A **start floor** from a Roughtime quorum refuses to sign for the past after a restart, so a rolled-back disk can't double-sign. |
+| A compromised VC or charon can ask the signer for any signature. | Every signing root is recomputed from the typed request. Fee recipients are pinned to the cluster lock. Exits need a separate role. Gloas builder bids are refused outright. |
+| You trust that a peer runs what it says it runs. | `GET /api/v1/tee/attestation` returns a hardware report binding the code measurement, the TLS key, the BLS shares and the cluster lock hash. `sev-signer verify-evidence` checks it offline, AMD chain included. |
+| A lost box is a lost share. | Still a lost share, by design. Nothing exports keys. The cluster replaces or recovers the operator, as it would without a TEE ([docs/cluster-edits.md](docs/cluster-edits.md)). |
 
-**Supported request types:** every Web3Signer eth2 type through Fulu.
-* `ATTESTATION`, `BLOCK_V2`, `RANDAO_REVEAL`, `AGGREGATION_SLOT`.
-* `AGGREGATE_AND_PROOF` and `AGGREGATE_AND_PROOF_V2`.
-* The three sync committee types.
-* `VOLUNTARY_EXIT` (EIP-7044), `VALIDATOR_REGISTRATION` and `DEPOSIT`.
+Each guest is one share, not the whole validator. A broken TEE, or a bug in one chip vendor's firmware, costs
+one share. The cluster threshold still holds. That's why DVTEE leans on the DV for key generation, recovery and
+image upgrades instead of trusting any single enclave.
 
-Signing roots and signatures are checked byte for byte against vectors generated with
-[go-eth2-client](https://github.com/attestantio/go-eth2-client) and herumi BLS, the same stack charon uses.
+## Highlights
 
-## Quickstart
+* **Signs only what it can verify.** It never signs a client-supplied 32-byte root.
+  * Signing roots are cross-checked byte for byte against go-eth2-client with herumi BLS (the stack charon
+    uses), the consensus spec tests and Web3Signer's own examples.
+* **Every Web3Signer eth2 request type through Gloas:**
+  * attestations, blocks, aggregates and sync committee duties;
+  * exits, registrations and deposits;
+  * payload attestations, proposer preferences and self-built payload envelopes.
+* **EIP-3076 slashing protection,** checked against the interchange test suite, with import and export.
+* **Pinned to the cluster lock.** The signer pins the charon lock on first start and checks its hashes and
+  aggregate signature. After that it refuses any other lock, and any fee recipient the lock didn't agree.
+* **Client roles.** mTLS client certificates and tokens carry `duties`, `exit` or `deposit` roles, so the
+  validator client can't sign an exit.
+* **A measured, minimal guest.**
+  * Debian from a pinned snapshot, built with mkosi.
+  * A UKI with `kernel-hashes=on`.
+  * A dm-verity root, and a LUKS2 data disk with AEAD integrity sealed to the SNP measurement.
+  * No shell, getty or sshd.
+  * Builds from two separate checkouts are byte-identical, so anyone can recompute the expected measurement.
+* **Small.** About 7,500 lines of Rust outside tests. It uses blst, ring and rustls, and no consensus-types
+  library.
+
+**Tested against** Lighthouse, Teku, Lodestar and Prysm, each signing through its own signer as one operator of
+a 3-of-4 charon cluster ([`e2e/devnet/`](e2e/devnet/README.md)).
+* Charon verified every partial signature, and every duty reached the chain, Gloas payloads included.
+* The cluster kept working with one node down.
+* Slashing protection held across restarts.
+
+## Quickstart (development, no TEE)
 
 ```sh
 cd signer
-cargo build --release
+cargo build --release --features insecure-dev
 
 ./target/release/sev-signer serve \
+  --platform insecure-dev \
   --network hoodi \
   --keystores-dir /path/to/.charon/validator_keys \
+  --cluster-lock /path/to/.charon/cluster-lock.json \
   --data-dir ./data \
   --listen 127.0.0.1:9000
 ```
 
-**Point your validator client at it.** Use `https://127.0.0.1:9000` as the Web3Signer URL, and trust the
-certificate generated at `./data/tls/cert.pem`.
-
-**Require client certificates.** Add `--tls-known-clients knownClients.txt`, which uses Web3Signer's format.
-
-**Check a running signer.**
+* **Point the validator client at `https://127.0.0.1:9000`,** and trust `./data/tls/cert.pem`.
+  [`signer/README.md`](signer/README.md#validator-clients) has the flags for each client.
+* **`insecure-dev` has no security.** It's for development, and it refuses mainnet. In a real deployment the
+  signer runs as `--platform tee` inside the guest image.
+* **Check a running signer:**
 
 ```sh
 NONCE=$(openssl rand -hex 32)
 curl --cacert data/tls/cert.pem "https://127.0.0.1:9000/api/v1/tee/attestation?nonce=$NONCE" > evidence.json
-./target/release/sev-signer verify-evidence --evidence evidence.json --nonce $NONCE --expected-measurement <hex>
+./target/release/sev-signer verify-evidence --evidence evidence.json --nonce $NONCE \
+  --expected-cluster-lock-hash <hex> --allow-insecure-dev
 ```
 
-See [`signer/README.md`](signer/README.md) for every option, the API reference and testing.
+In a guest, drop `--allow-insecure-dev` and add `--expected-measurement <hex> --fetch-vcek`.
+
+See [`signer/README.md`](signer/README.md) for every option, the API, mTLS and tokens, and testing.
+
+## On SEV-SNP hardware
+
+* [`image/`](image/README.md) builds the guest image, and
+  [`scripts/expected-measurement.sh`](scripts/expected-measurement.sh) computes its launch measurement from the
+  build output.
+* [docs/hardware-runbook.md](docs/hardware-runbook.md) is the step-by-step first run on a bare-metal AMD EPYC
+  host. It covers:
+  * the OVMF build and the image build;
+  * first boot and attestation;
+  * seal and unseal across reboots;
+  * negative tests;
+  * a charon devnet with the signer in the guest.
 
 ## Repository layout
 
 | Path | What it is |
 |------|------------|
-| [`signer/`](signer/) | `sev-signer`, the Rust signing service |
-| [`image/`](image/), [`scripts/`](scripts/) | The mkosi guest image, its expected measurement and launch scripts; [docs/hardware-runbook.md](docs/hardware-runbook.md) is the first hardware run |
-| [`vm-scripts/`](vm-scripts/), [`linux-mainline-sev-src/`](linux-mainline-sev-src/) | Superseded by `image/`: the 2024 prototype tooling (kernel, initramfs, dm-verity root and installer) |
-| [`poc/`](poc/) | The original proof of concept: DKG and stock Web3Signer in an SNP guest |
-| [ARCHITECTURE.md](ARCHITECTURE.md) | Measured boot and disk sealing design for the guest image |
-| [ROADMAP.md](ROADMAP.md) | Status, known issues and the path to production |
+| [`signer/`](signer/) | `sev-signer`, the signing service |
+| [`image/`](image/), [`ovmf/`](ovmf/), [`scripts/`](scripts/) | The reproducible guest image, firmware, measurement and launch tooling |
+| [`e2e/`](e2e/) | Devnet and simnet harnesses with charon and real validator clients |
+| [`docs/`](docs/) | [Threat model](docs/threat-model.md), [cluster edits](docs/cluster-edits.md), [load test](docs/load-test.md), [hardware runbook](docs/hardware-runbook.md) |
+| [ARCHITECTURE.md](ARCHITECTURE.md) | Measured boot and disk sealing |
+| [ROADMAP.md](ROADMAP.md) | Status, design choices, known gaps |
+| [`poc/`](poc/) | The 2024 proof of concept: charon's DKG and stock Web3Signer inside an SNP guest |
+| [`vm-scripts/`](vm-scripts/), [`linux-mainline-sev-src/`](linux-mainline-sev-src/) | The 2024 prototype image, superseded by `image/` and kept for reference. **Not safe for keys** |
 
-## Building the prototype guest image
+## Where it's going
 
-Superseded by the mkosi image in [`image/`](image/README.md). Kept for reference.
-
-> [!CAUTION]
-> This image is for development on SEV-SNP hardware only.
-> * It has default logins (`root:root`, `signer:signer`) and a console shell.
-> * Its writable partitions are unencrypted.
->
-> [ROADMAP.md](ROADMAP.md) explains the replacement plan.
-
-**Requirements.**
-* Ubuntu with `guestfs-tools`, `systemd-ukify` and `systemd-boot`.
-* An SEV-SNP capable host with QEMU for AMD SEV. Scripts expect QEMU at
-  `/root/AMDSEV/qemu/build/qemu-system-x86_64`; override this with `QEMU_SEV_PATH`.
-
-**Steps.**
-
-```sh
-make kernel                                   # SEV guest kernel + initramfs (in Docker)
-cd vm-scripts
-bash ./provision-installer.sh clean          # ERASES any existing VM disks
-bash ./provision-installer.sh [user-install-dir]
-bash ./run-installer.sh                      # installs Alpine, sets up dm-verity
-bash ./provision.sh                          # builds the final UKI with the verity root hash
-bash ./run.sh                                # boots the encrypted VM
-```
-
-**Other `make` targets.**
-* `just-kernel` and `just-initramfs` build one half of `make kernel`.
-* `docker-image` builds the builder image.
-* `kernel-checksum` refreshes the APKBUILD checksums.
-* `clean` empties `out/`.
+* **Hardware and Hoodi.** A first boot on SEV-SNP hardware, then one operator of a live Hoodi DV signing
+  through the guest.
+* **Keys born in the TEE.** Charon's DKG delivers each share straight into the guest over attested TLS. Later,
+  the DKG runs inside the guest.
+* **Cluster edits with guests.** Recover, reshare and replace-operator, ordered by a threshold of operators
+  ([design](docs/cluster-edits.md)).
+* **More TEEs.** Evidence comes from Linux configfs-tsm, so Intel TDX and Arm CCA use the same code path.
+  Mixing vendors within one cluster is the long-term goal: one share per chip family.
 
 ## Contributing
 
@@ -130,6 +172,8 @@ Useful git hooks live in `.githooks`. Enable them with:
 ```sh
 git config --local core.hooksPath .githooks
 ```
+
+Security issues: see [SECURITY.md](SECURITY.md).
 
 ## License
 
