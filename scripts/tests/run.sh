@@ -69,6 +69,7 @@ check "report fields: debug bit" grep -q '^policy_debug: *True' <<<"$out"
 m=$(jq -r .report "$T/evidence.json" | sed 's/^0x//' | cut -c $((0x90 * 2 + 1))-$((0xC0 * 2)))
 check "report fields: measurement offset" grep -q "^measurement: *$m\$" <<<"$out"
 check "report fields: committed TCB" test "$("$ROOT/scripts/snp-report-fields.py" --committed-tcb "$T/evidence.json")" = 0x0000000000000000
+check "report fields: min TCB" test "$("$ROOT/scripts/snp-report-fields.py" --min-tcb "$T/evidence.json")" = 0x0000000000000000
 stop_signer
 
 echo

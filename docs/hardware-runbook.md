@@ -196,12 +196,17 @@ snpguest verify attestation certs report.bin | tee snpguest-verify.txt
 **Pick the minimum TCB:**
 
 ```sh
-MIN_TCB=$($R/scripts/snp-report-fields.py --committed-tcb evidence.json); echo $MIN_TCB
+MIN_TCB=$($R/scripts/snp-report-fields.py --min-tcb evidence.json); echo $MIN_TCB
 ```
 
-* **Why committed TCB.** It is the lowest TCB the firmware will still accept. Pinning it means
+* **Why this value.** It is the component-wise minimum of the reported and committed TCB, usually
+  just the committed TCB. That's the lowest TCB the firmware will still accept. Pinning it means
   firmware updates keep the disk key, and nobody can roll the platform back below it and still derive
   the key.
+* **Why not always the committed TCB.** When newer firmware was loaded but not committed, the
+  reported TCB lags the committed one, and `verify-evidence --min-tcb` checks both. On the first
+  hardware run (Milan, firmware 1.55.29 loaded from linux-firmware) the reported SNP SVN was 23 and the
+  committed one 24, so pinning the committed value failed attestation.
 * **Record** all four TCB values (current, reported, committed, launch) and the firmware version from
   `report-fields.txt`.
 

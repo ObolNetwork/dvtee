@@ -7,6 +7,7 @@ and the firmware version.
     scripts/snp-report-fields.py evidence.json   # from /api/v1/tee/attestation
     scripts/snp-report-fields.py report.bin      # raw 1184-byte report
     scripts/snp-report-fields.py --committed-tcb evidence.json   # just that value
+    scripts/snp-report-fields.py --min-tcb evidence.json   # the SNP_MIN_TCB to pin
 
 Offsets are from the SEV-SNP ABI (ATTESTATION_REPORT), as parsed by the
 virtee `sev` crate. Nothing here checks the signature: that is
@@ -68,9 +69,25 @@ def fields(r):
     return out
 
 
+def min_tcb(r):
+    """Component-wise minimum of REPORTED_TCB and COMMITTED_TCB.
+
+    The minimum TCB a guest pins must not exceed either: verify-evidence
+    --min-tcb checks both. They differ when firmware was loaded but not
+    committed (the reported TCB then lags). Every component is one byte in
+    both the Milan/Genoa and Turin layouts, and reserved bytes are zero, so a
+    byte-wise minimum is a component-wise minimum.
+    """
+    rep = r[0x180:0x188]
+    com = r[0x1E0:0x1E8]
+    return "0x%016x" % int.from_bytes(bytes(min(a, b) for a, b in zip(rep, com)), "little")
+
+
 def main(argv):
     if len(argv) == 3 and argv[1] == "--committed-tcb":
         print(fields(load(argv[2]))["committed_tcb"])
+    elif len(argv) == 3 and argv[1] == "--min-tcb":
+        print(min_tcb(load(argv[2])))
     elif len(argv) == 3 and argv[1] == "--json":
         print(json.dumps(fields(load(argv[2])), indent=2))
     elif len(argv) == 2 and not argv[1].startswith("-"):
