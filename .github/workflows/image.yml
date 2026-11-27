@@ -1,0 +1,96 @@
+name: image
+
+# Builds the guest image twice, on separate runners from different checkout
+# paths, and fails unless both builds are byte-identical. (ubuntu-22.04's
+# debian-archive-keyring can't verify trixie, so both use ubuntu-24.04.) The artifacts are what an SNP host boots
+# (hosts that block user namespaces can't run mkosi themselves). The summary
+# lists SHA256SUMS; scripts/expected-measurement.sh turns the UKI into the
+# launch measurement.
+
+on:
+  push:
+    branches: [main, "image/**"]
+    paths: ["image/**", "signer/**", ".github/workflows/image.yml"]
+  pull_request:
+    paths: ["image/**", "signer/**", ".github/workflows/image.yml"]
+  workflow_dispatch:
+    inputs:
+      snp_min_tcb:
+        description: "SNP_MIN_TCB (0x + 16 hex digits; all zeros = discovery build)"
+        default: "0x0000000000000000"
+      profile:
+        description: "mkosi profile (empty = release; debug)"
+        default: ""
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  SNP_MIN_TCB: ${{ inputs.snp_min_tcb || '0x0000000000000000' }}
+  PROFILE: ${{ inputs.profile || '' }}
+
+jobs:
+  build:
+    name: build (${{ matrix.path }})
+    strategy:
+      matrix:
+        path: [a, other/path/b]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          path: ${{ matrix.path }}
+      - name: Host setup
+        run: |
+          # mkosi sandboxes itself in unprivileged user namespaces.
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq debian-archive-keyring
+      - name: Build
+        working-directory: ${{ matrix.path }}
+        run: |
+          args=()
+          [[ -n $PROFILE ]] && args=(--profile "$PROFILE")
+          OUT_DIR=$PWD/out/image image/build.sh "${args[@]}"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: image-${{ strategy.job-index }}
+          path: |
+            ${{ matrix.path }}/out/image*/sev-signer
+            ${{ matrix.path }}/out/image*/sev-signer.efi
+            ${{ matrix.path }}/out/image*/sev-signer.raw
+            ${{ matrix.path }}/out/image*/sev-signer.roothash
+            ${{ matrix.path }}/out/image*/SHA256SUMS
+            ${{ matrix.path }}/out/image*/BUILDINFO
+          if-no-files-found: error
+
+  reproducible:
+    name: reproducible build
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: image-*
+      - name: Compare the two builds
+        run: |
+          diff -r image-0 image-1
+          {
+            echo "### Guest image (reproduced on two runners)"
+            echo '```'
+            cat image-0/*/SHA256SUMS
+            cat image-0/*/BUILDINFO
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: image
+          path: image-0/
+          if-no-files-found: error

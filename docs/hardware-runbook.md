@@ -196,12 +196,17 @@ snpguest verify attestation certs report.bin | tee snpguest-verify.txt
 **Pick the minimum TCB:**
 
 ```sh
-MIN_TCB=$($R/scripts/snp-report-fields.py --committed-tcb evidence.json); echo $MIN_TCB
+MIN_TCB=$($R/scripts/snp-report-fields.py --min-tcb evidence.json); echo $MIN_TCB
 ```
 
-* **Why committed TCB.** It is the lowest TCB the firmware will still accept. Pinning it means
+* **Why this value.** It is the component-wise minimum of the reported and committed TCB, usually
+  just the committed TCB. That's the lowest TCB the firmware will still accept. Pinning it means
   firmware updates keep the disk key, and nobody can roll the platform back below it and still derive
   the key.
+* **Why not always the committed TCB.** When newer firmware was loaded but not committed, the
+  reported TCB lags the committed one, and `verify-evidence --min-tcb` checks both. On the first
+  hardware run (Milan, firmware 1.55.29 loaded from linux-firmware) the reported SNP SVN was 23 and the
+  committed one 24, so pinning the committed value failed attestation.
 * **Record** all four TCB values (current, reported, committed, launch) and the firmware version from
   `report-fields.txt`.
 
@@ -441,6 +446,9 @@ verbose systemd and udev logs; it has its own measurement.
 
 | Symptom | Likely cause |
 |---|---|
+| mkosi: `userns_acquire_empty`, `OSError: [Errno -28]` or `unshare failed: No space left on device` | the host blocks user namespaces (`user.max_user_namespaces=0`, as Obol's host hardening sets on purpose). Don't relax it: build in CI (`.github/workflows/image.yml`, run on a branch or by `workflow_dispatch` with `snp_min_tcb`) and copy the artifacts to the host. The builds are reproducible, so `SHA256SUMS` from CI is what you'd have built |
+| boot reaches `multi-user.target` but sev-signer never starts; the serial log shows the data disk's fsck, then nothing | the root image lacks `dmsetup`'s udev rules, so systemd marks the initrd's dm devices not ready after switch-root and stops the data disk's mount. Fixed in `mkosi.conf`; to see it, boot with `--append "<the image's command line> systemd.log_level=debug systemd.log_target=console"` and look for `var-lib-sev\x2dsigner.mount/stop` |
+| `systemd-resolved.service`: `/var/tmp: No such file or directory`, `226/NAMESPACE` | resolved started before the `/var` tmpfs; fixed by the drop-in in `mkosi.extra/usr/lib/systemd/system/systemd-resolved.service.d/` |
 | mkosi stops on a missing ESP or bootloader | `mkosi.repart/` deliberately has no ESP (the UKI is booted with `-kernel`). Add `00-esp.conf` with `Type=esp`, `Format=vfat`, `CopyFiles=/efi:/` and `CopyFiles=/boot:/`. The guest never reads it, and the measurement doesn't change. Record the error |
 | mkosi: a package is missing from the snapshot | record the name; the tools tree uses only the base profile (`ToolsTreeProfiles=`) |
 | QEMU: SNP not supported, `KVM_SEV_INIT2` fails | SNP is off on the host: BIOS settings (1.1), `kvm_amd.sev_snp`, or SNP firmware |
