@@ -14,8 +14,10 @@ pub struct View<'a> {
     pub provider: &'a str,
     pub report: &'a [u8],
     pub network: &'a str,
-    pub pubkeys: &'a [[u8; 48]],
+    /// Each share, with its validator's group key when a lock is pinned.
+    pub keys: Vec<([u8; 48], Option<[u8; 48]>)>,
     pub lock_hash: Option<[u8; 32]>,
+    pub operator_index: Option<usize>,
     pub cert_sha256: [u8; 32],
     /// `None` when anti-rollback is off.
     pub clock: Option<ClockView>,
@@ -50,6 +52,21 @@ fn esc(s: &str) -> String {
 
 fn hx(b: &[u8]) -> String {
     format!("0x{}", hex::encode(b))
+}
+
+/// The launchpad's page for a cluster, for the public networks it serves.
+/// Only clusters created through the launchpad are listed there.
+fn launchpad_url(network: &str, lock_hash: &[u8; 32]) -> Option<String> {
+    let host = match network {
+        "mainnet" => "launchpad.obol.org",
+        "hoodi" => "hoodi.launchpad.obol.org",
+        "sepolia" => "sepolia.launchpad.obol.org",
+        _ => return None,
+    };
+    Some(format!(
+        "https://{host}/cluster/details/?lockHash={}",
+        hx(lock_hash)
+    ))
 }
 
 fn tcb(t: &Tcb) -> String {
@@ -107,21 +124,50 @@ pub fn render(v: &View) -> String {
     rows.push((
         "Cluster lock",
         match v.lock_hash {
-            Some(h) => format!("<code>{}</code>", hx(&h)),
+            Some(h) => {
+                let mut s = format!("<code>{}</code>", hx(&h));
+                if let Some(i) = v.operator_index {
+                    let _ = write!(s, "<br>operator {i}");
+                }
+                if let Some(url) = launchpad_url(v.network, &h) {
+                    let _ = write!(
+                        s,
+                        " · <a href=\"{url}\" rel=\"noopener noreferrer\">cluster on the Obol launchpad</a>"
+                    );
+                }
+                s
+            }
             None => "not pinned".into(),
         },
         "",
     ));
+    let n = v.keys.len();
     let mut keys = format!(
-        "<details><summary>{} key share{}</summary>",
-        v.pubkeys.len(),
-        if v.pubkeys.len() == 1 { "" } else { "s" }
+        "<details><summary>{n} key share{}{}</summary>",
+        if n == 1 { "" } else { "s" },
+        match (v.lock_hash.is_some(), n == 1) {
+            (false, _) => "",
+            (true, true) => " of a distributed validator",
+            (true, false) => " of distributed validators",
+        }
     );
-    for k in v.pubkeys {
-        let _ = write!(keys, "<code>{}</code><br>", hx(k));
+    for (share, dv) in &v.keys {
+        match dv {
+            Some(dv) => {
+                let _ = write!(
+                    keys,
+                    "<div class=\"key\">validator <code>{}</code><br>this share <code>{}</code></div>",
+                    hx(dv),
+                    hx(share)
+                );
+            }
+            None => {
+                let _ = write!(keys, "<div class=\"key\"><code>{}</code></div>", hx(share));
+            }
+        }
     }
     keys.push_str("</details>");
-    rows.push(("Validator keys", keys, ""));
+    rows.push(("Keys", keys, ""));
     rows.push((
         "TLS certificate",
         format!("sha256 <code>{}</code>", hex::encode(v.cert_sha256)),
@@ -195,6 +241,8 @@ tr.bad td{{color:var(--bad)}}
 code,pre{{font:13px ui-monospace,monospace}}
 pre{{background:#091011;border:1px solid var(--line);padding:12px;overflow-x:auto;white-space:pre}}
 summary{{cursor:pointer}}
+a{{color:var(--ok)}}
+.key{{margin:8px 0}}
 h2{{font-size:16px;margin:28px 0 6px}}
 </style></head><body><main>
 <h1><span>●</span> DVTEE signer</h1>
@@ -221,8 +269,9 @@ mod tests {
             provider,
             report,
             network: "hoodi<script>",
-            pubkeys: &[[0xab; 48]],
+            keys: vec![([0xab; 48], Some([0xcd; 48]))],
             lock_hash: Some([0x6a; 32]),
+            operator_index: Some(2),
             cert_sha256: [0x11; 32],
             clock: Some(ClockView {
                 floor: Some(100),
@@ -247,6 +296,29 @@ mod tests {
         assert!(html.contains("from epoch 101 (start floor)"));
         assert!(html.contains("--allow-insecure-dev"));
         assert!(html.contains("--expected-cluster-lock-hash"));
+        assert!(html.contains(&format!("validator <code>0x{}", "cd".repeat(48))));
+        assert!(html.contains(&format!("this share <code>0x{}", "ab".repeat(48))));
+        assert!(html.contains("operator 2"));
+        // A custom network name gets no launchpad link.
+        assert!(!html.contains("launchpad.obol.org"));
+    }
+
+    #[test]
+    fn launchpad_link_for_public_networks() {
+        let h = [0x6a; 32];
+        assert_eq!(
+            launchpad_url("hoodi", &h).unwrap(),
+            format!(
+                "https://hoodi.launchpad.obol.org/cluster/details/?lockHash=0x{}",
+                "6a".repeat(32)
+            )
+        );
+        assert!(
+            launchpad_url("mainnet", &h)
+                .unwrap()
+                .starts_with("https://launchpad.obol.org/")
+        );
+        assert!(launchpad_url("devnet", &h).is_none());
     }
 
     #[test]

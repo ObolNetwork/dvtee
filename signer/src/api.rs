@@ -294,8 +294,12 @@ async fn attestation(
                 provider: &ev.provider,
                 report: &ev.report,
                 network: &st.network.name,
-                pubkeys: &pubkeys,
+                keys: pubkeys
+                    .iter()
+                    .map(|k| (*k, st.pins.as_ref().and_then(|p| p.validator_of(k))))
+                    .collect(),
                 lock_hash,
+                operator_index: st.pins.as_ref().map(|p| p.operator_index),
                 cert_sha256: sha2::Sha256::digest(&cert_der).into(),
                 clock: st.clock.as_ref().map(|c| crate::status_page::ClockView {
                     floor: c.floor_epoch(),
