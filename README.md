@@ -3,7 +3,7 @@
 <h1 align="center">DVTEE<br/>Distributed validators, with every share sealed in a TEE</h1>
 
 <p align="center">
-<a href="https://github.com/ObolNetwork/sev-signer/actions/workflows/signer.yml"><img src="https://github.com/ObolNetwork/sev-signer/actions/workflows/signer.yml/badge.svg" alt="CI"></a>
+<a href="https://github.com/ObolNetwork/dvtee/actions/workflows/signer.yml"><img src="https://github.com/ObolNetwork/dvtee/actions/workflows/signer.yml/badge.svg" alt="CI"></a>
 <a href="LICENSE"><img src="https://img.shields.io/badge/License-BUSL--1.1-blue.svg" alt="License: BUSL-1.1"></a>
 <img src="https://img.shields.io/badge/status-experimental-orange.svg" alt="Status: experimental">
 <img src="https://img.shields.io/badge/forks-Electra%20%C2%B7%20Fulu%20%C2%B7%20Gloas-6f42c1.svg" alt="Forks: Electra, Fulu, Gloas">

@@ -7,7 +7,7 @@ name: release
 #
 # Verify a download:
 #   sha256sum -c sev-signer-x86_64-unknown-linux-gnu.sha256
-#   gh attestation verify sev-signer-x86_64-unknown-linux-gnu --repo ObolNetwork/sev-signer
+#   gh attestation verify sev-signer-x86_64-unknown-linux-gnu --repo ObolNetwork/dvtee
 # or rebuild it: check out the tag, install the toolchain in BUILD-TOOLCHAIN,
 # run signer/scripts/build-release.sh and compare the hash.
 
