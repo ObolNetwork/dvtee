@@ -65,6 +65,10 @@ log "mkosi $MKOSI_TAG build ${PROFILE:+(profile $PROFILE)}"
 args=(-C image --output-directory "$OUT_DIR" --force)
 [[ -n $PROFILE ]] && args+=(--profile "$PROFILE")
 "$MKOSI_DIR/bin/mkosi" "${args[@]}" build
+# mkosi's Output=sev-signer leaves a symlink sev-signer -> sev-signer.raw in OUT_DIR, replacing the
+# binary from step 1. Remove the link (install would write through it) and put the binary back.
+rm -f "$OUT_DIR/sev-signer"
+install -m 0755 image/payload/usr/bin/sev-signer "$OUT_DIR/sev-signer"
 
 # 4. Record what went in.
 cd "$OUT_DIR"

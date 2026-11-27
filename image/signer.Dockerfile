@@ -12,6 +12,7 @@ ENV CARGO_HOME=/cargo \
 WORKDIR /src
 COPY Cargo.toml Cargo.lock ./
 COPY src ./src
+COPY certs ./certs
 RUN cargo build --release --locked --target x86_64-unknown-linux-gnu \
  && cp target/x86_64-unknown-linux-gnu/release/sev-signer /sev-signer \
- && ! ldd /sev-signer >/dev/null 2>&1
+ && ldd /sev-signer 2>&1 | grep -qE 'statically linked|not a dynamic executable'

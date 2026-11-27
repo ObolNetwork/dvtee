@@ -101,8 +101,8 @@ impl Pins {
         })
     }
 
-    /// Refuses a request whose fee recipient, or registration pubkey,
-    /// differs from the pinned lock.
+    /// Refuses a request whose fee recipient differs from the pinned lock, or
+    /// a registration whose pubkey is neither the validator's nor this share.
     pub fn check(&self, share: &[u8; 48], body: &SignBody) -> Result<(), PrepareError> {
         let v = self.validator(share)?;
         let fee_recipient = |kind: &str, got: &[u8; 20]| {
@@ -120,7 +120,11 @@ impl Pins {
             SignBody::ValidatorRegistration {
                 validator_registration: r,
             } => {
-                if r.pubkey.0 != v.pubkey {
+                // A DV's validator client only knows its share, so it puts the
+                // share in `pubkey`; charon registers with the lock's own
+                // registration instead. Accept either, with the lock's fee
+                // recipient.
+                if r.pubkey.0 != v.pubkey && r.pubkey.0 != *share {
                     return Err(PrepareError::Refused(format!(
                         "VALIDATOR_REGISTRATION for 0x{}, but this share belongs to 0x{}",
                         hex::encode(r.pubkey.0),
@@ -260,6 +264,12 @@ mod tests {
                 .is_err()
         );
         assert!(pins.check(&key, &reg(FR, hx(&[0x31; 48]).into())).is_err());
+        // The share itself, as a DV's validator client sends it.
+        assert!(pins.check(&key, &reg(FR, hx(&key).into())).is_ok());
+        assert!(pins.check(&key, &reg([0x66; 20], hx(&key).into())).is_err());
+        // Another operator's share of the same validator is refused.
+        let other = s.validators[0].1[1].public_key();
+        assert!(pins.check(&key, &reg(FR, hx(&other).into())).is_err());
 
         let mut prefs = example("PROPOSER_PREFERENCES (GLOAS)");
         assert!(pins.check(&key, &body(prefs.clone())).is_err());
